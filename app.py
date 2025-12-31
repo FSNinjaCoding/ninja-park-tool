@@ -6,6 +6,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import re
 
 # --- CONFIGURATION ---
+# The exact name of the Google Sheet you created in your Drive
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
 st.set_page_config(page_title="Ninja Park Processor", layout="wide")
@@ -13,16 +14,14 @@ st.set_page_config(page_title="Ninja Park Processor", layout="wide")
 def clean_name(name):
     """Standardizes names (Title Case, no extra spaces)."""
     if not isinstance(name, str): return ""
-    # Remove any leading numbers like "1. " or "1 " if they accidentally get caught
-    # But usually parsing by column index avoids this.
     return re.sub(r'\s+', ' ', name).strip().title()
 
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
     
-    # The file consists of MANY small tables. 
-    # We iterate through them to track the "Current Class" context.
+    # The Roll Sheet is made of hundreds of small tables.
+    # We iterate through them to track the "Current Class".
     tables = soup.find_all('table')
     
     current_class_name = "Unknown Class"
@@ -31,45 +30,40 @@ def parse_roll_sheet(uploaded_file):
         rows = table.find_all('tr')
         if not rows: continue
         
-        # Check first row to see what kind of table this is
+        # Check the first row to identify the table type
         first_row_cols = [c.get_text(strip=True) for c in rows[0].find_all(['td', 'th'])]
         
-        # CASE 1: Class Header Table
-        # Example: ['Advanced Ninja... | Thu: 6:00', '12/29...']
-        # We identify it by the pipe "|" character or specific keywords
+        # CASE 1: Class Header Table (e.g., "Advanced Ninja... | Thu: 6:00")
         if len(first_row_cols) > 0 and ("|" in first_row_cols[0] or "Ninja" in first_row_cols[0]):
-            # Verify it's not a student row
             if "Student" not in first_row_cols[0]: 
                 current_class_name = first_row_cols[0]
                 continue
 
-        # CASE 2: Student Data Table
-        # Header row usually looks like: ['', 'Student', '', 'Details', 'Date...']
-        # We look for "Student" in the header to confirm it's a data table
+        # CASE 2: Student Data Table (Header contains "Student")
         is_student_table = False
-        name_idx = 1 # Default based on inspection
-        detail_idx = 3 # Default based on inspection
+        name_idx = 1 # Default based on your file
+        detail_idx = 3 # Default based on your file
         
-        # Check header row
+        # Scan header to confirm it's a student table and find column indices
         for idx, col_text in enumerate(first_row_cols):
             if "Student" in col_text:
                 is_student_table = True
                 name_idx = idx
-                # usually Details is name_idx + 2, but let's find it
+                # Look for "Details" column
                 for sub_idx, sub_text in enumerate(first_row_cols):
                     if "Details" in sub_text:
                         detail_idx = sub_idx
                 break
         
         if is_student_table:
-            # Iterate through the student rows (skip header)
+            # Iterate through student rows (skipping the header)
             for row in rows[1:]:
                 cols = row.find_all(['td', 'th'])
                 if len(cols) > max(name_idx, detail_idx):
                     raw_name = cols[name_idx].get_text(strip=True)
                     details_text = cols[detail_idx].get_text(strip=True).lower()
                     
-                    # Extract Skill Level (S1-S10)
+                    # Extract Skill Level (s1-s10)
                     skill_level = "s0"
                     skill_match = re.search(r's([0-9]|10)\b', details_text)
                     if skill_match:
@@ -92,21 +86,17 @@ def parse_student_list(uploaded_file):
     data = []
     tables = soup.find_all('table')
     
-    # The student list is usually just ONE big table
     for table in tables:
         rows = table.find_all('tr')
         if not rows: continue
         
-        # Detect Headers
+        # Detect Headers to find column indices
         headers = [c.get_text(strip=True).lower() for c in rows[0].find_all(['td', 'th'])]
         
-        # Default indices based on your file inspection
-        # Row 0: ['', 'Student Name', 'Attendance...', 'Age', 'Student Keywords', ...]
         name_idx = 1
         age_idx = 3
         key_idx = 4
         
-        # Try to find dynamic indices if headers exist
         for i, h in enumerate(headers):
             if "student name" in h: name_idx = i
             elif "age" in h: age_idx = i
@@ -120,7 +110,7 @@ def parse_student_list(uploaded_file):
                 age = cols[age_idx].get_text(strip=True)
                 keywords_raw = cols[key_idx].get_text(strip=True).lower()
                 
-                # Filter Keywords: Only keep Group 1, Group 2, or Group 3
+                # Filter Keywords: Group 1, 2, or 3
                 group_match = re.search(r'(group\s*[1-3])', keywords_raw)
                 clean_keyword = group_match.group(0).capitalize() if group_match else ""
 
@@ -138,7 +128,7 @@ def parse_student_list(uploaded_file):
 
 def update_google_sheet(df):
     if "gcp_service_account" not in st.secrets:
-        st.error("Secrets not found!")
+        st.error("Secrets not found! Please check your Streamlit settings.")
         return None
 
     creds_dict = st.secrets["gcp_service_account"]
@@ -147,19 +137,21 @@ def update_google_sheet(df):
     client = gspread.authorize(creds)
 
     try:
+        # We only OPEN the sheet, we do not create it.
         sheet = client.open(GOOGLE_SHEET_NAME).sheet1
+        
+        # Clear and Update
+        sheet.clear()
+        sheet.update([df.columns.values.tolist()] + df.values.tolist())
+        return f"https://docs.google.com/spreadsheets/d/{sheet.spreadsheet.id}"
+        
     except gspread.exceptions.SpreadsheetNotFound:
-        try:
-            sh = client.create(GOOGLE_SHEET_NAME)
-            sheet = sh.sheet1
-            sh.share(creds_dict['client_email'], perm_type='user', role='owner')
-        except Exception as e:
-            st.error(f"Could not create sheet: {e}")
-            return None
-
-    sheet.clear()
-    sheet.update([df.columns.values.tolist()] + df.values.tolist())
-    return f"https://docs.google.com/spreadsheets/d/{sheet.spreadsheet.id}"
+        st.error(f"❌ Could not find the Google Sheet named '{GOOGLE_SHEET_NAME}'.")
+        st.info(f"Please create a blank sheet with that EXACT name in your Drive and share it with: {creds_dict['client_email']}")
+        return None
+    except Exception as e:
+        st.error(f"Error updating sheet: {e}")
+        return None
 
 # --- MAIN UI ---
 st.title("🥷 Ninja Park Data Processor")
@@ -171,9 +163,7 @@ with col1:
 with col2:
     list_file = st.file_uploader("2. Upload Student List", type=['html', 'htm'])
 
-# --- DEBUG INFO ---
 if roll_file and list_file:
-    # Reset file pointers
     roll_file.seek(0)
     list_file.seek(0)
     
@@ -214,7 +204,7 @@ if roll_file and list_file:
                     link = update_google_sheet(final_df)
                     if link:
                         st.success("Google Sheet Updated!")
-                        # FORCE NEW TAB LINK
+                        # FORCE NEW TAB LINK to prevent reset
                         st.markdown(f'<a href="{link}" target="_blank" style="background-color:#0083B8;color:white;padding:10px;text-decoration:none;border-radius:5px;display:inline-block;">OPEN GOOGLE SHEET ⬈</a>', unsafe_allow_html=True)
                         
         except Exception as e:

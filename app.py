@@ -8,8 +8,8 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-# VERSION UPDATE: 3.5
-st.set_page_config(page_title="Ninja Park Processor 3.5", layout="wide")
+# VERSION UPDATE: 3.6
+st.set_page_config(page_title="Ninja Park Processor 3.6", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -190,21 +190,21 @@ def apply_highlight_rules(df_records):
         class_name = str(row.get("Class Name", "")).lower()
         is_advanced = "advanced" in class_name
         
-        # RULE: RED (Bold + Red Text)
+        # RULE: RED TEXT (Bold + Red Text)
         # Class not Advanced AND Skill >= 3
         if not is_advanced and skill >= 3:
             formats[i] = {
-                # No background color specified, defaults to white/none
+                # No background color specified
                 "text_color": {"red": 1.0, "green": 0.0, "blue": 0.0}, # Pure Red
                 "bold": True
             }
             continue
 
-        # RULE: ORANGE (Light Orange Background)
+        # RULE: RED BACKGROUND (Light Red) - Changed from Orange
         # If group is blank (99)
         if group == 99:
             formats[i] = {
-                "bg": {"red": 0.98, "green": 0.9, "blue": 0.8}, # Light Orange
+                "bg": {"red": 1.0, "green": 0.8, "blue": 0.8}, # Light Red
                 "bold": False
             }
             continue
@@ -214,15 +214,11 @@ def apply_highlight_rules(df_records):
         
         if is_advanced:
             # Advanced Rules
-            # G1 >= s5 
-            # G2 >= s7 (Changed from s3 or s7)
-            # G3 == s3 (Changed from s5 or lower)
             if group == 1 and skill >= 5: is_yellow = True
             elif group == 2 and skill >= 7: is_yellow = True
             elif group == 3 and skill == 3: is_yellow = True
         else:
             # Standard Rules
-            # G1 >= s2 OR G2 == s0 OR G3 <= s1
             if group == 1 and skill >= 2: is_yellow = True
             elif group == 2 and skill == 0: is_yellow = True
             elif group == 3 and skill <= 1: is_yellow = True
@@ -253,7 +249,7 @@ def apply_highlight_rules(df_records):
                     "bold": False
                 }
                 break # Done for this group
-            # If format exists (Red/Orange/Yellow), loop continues to next person up.
+            # If format exists (Red/Yellow), loop continues to next person up.
 
     group_1_indices = [i for i, r in enumerate(df_records) if parse_group_number(r.get("Keyword", "")) == 1 and r.get("Student Name")]
     group_2_indices = [i for i, r in enumerate(df_records) if parse_group_number(r.get("Keyword", "")) == 2 and r.get("Student Name")]
@@ -456,7 +452,7 @@ def update_google_sheet_advanced(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.5")
+st.title("🥷 Ninja Park Data Processor 3.6")
 st.write("Dashboard Layout with Advanced Highlighting Rules")
 
 col1, col2 = st.columns(2)

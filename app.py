@@ -264,15 +264,14 @@ def update_google_sheet_advanced(full_df):
             time_df['sort_att'] = time_df['Attendance'].apply(parse_attendance)
             time_df['sort_age'] = time_df['Age'].apply(parse_age)
             
+            # FIXED SORTING CALL
             time_df = time_df.sort_values(
                 by=['sort_group', 'sort_skill', 'sort_att', 'sort_age'],
-                ascending=[True, True, True, True, True]
+                ascending=[True, True, True, True]
             )
             
             # Determine "Last in Group" for Green Highlight
-            # We create a boolean mask: True if it's the last member of its group
             time_df['is_last_in_group'] = time_df['Student Keyword'] != time_df['Student Keyword'].shift(-1)
-            # If group is blank, don't mark as green (optional, but usually safer)
             time_df.loc[time_df['Student Keyword'] == "", 'is_last_in_group'] = False
             
             # Prepare Data Block
@@ -282,7 +281,6 @@ def update_google_sheet_advanced(full_df):
             final_data_block = time_df[export_cols]
             
             # Write Header + Data to Grid
-            # Convert to list of lists including header
             values = [export_cols] + final_data_block.values.tolist()
             
             # Update cells (gspread uses row, col indices)
@@ -308,7 +306,7 @@ def update_google_sheet_advanced(full_df):
                         "repeatCell": {
                             "range": {
                                 "sheetId": ws.id,
-                                "startRowIndex": sheet_row,     # Row index (0-based)
+                                "startRowIndex": sheet_row,      # Row index (0-based)
                                 "endRowIndex": sheet_row + 1,
                                 "startColumnIndex": current_col_idx - 1, # Col index (0-based)
                                 "endColumnIndex": current_col_idx - 1 + len(export_cols)

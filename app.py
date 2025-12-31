@@ -59,7 +59,7 @@ def parse_age(age_str):
     match = re.search(r'(\d+)', str(age_str))
     return int(match.group(1)) if match else 99
 
-# --- PARSING LOGIC (Strict Cleaning Added) ---
+# --- PARSING LOGIC (Strict Cleaning) ---
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
@@ -97,7 +97,7 @@ def parse_roll_sheet(uploaded_file):
                 skill_match = re.search(r's([0-9]|10)\b', details_text)
                 if skill_match: skill_level = skill_match.group(0)
                 
-                # STRICT CHECK: Name must contain characters
+                # Strict check: Name must be non-empty
                 if raw_name and raw_name.strip():
                     data.append({
                         "Student Name": clean_name(raw_name),
@@ -140,7 +140,7 @@ def parse_student_list(uploaded_file):
             group_match = re.search(r'(group\s*[1-3])', keywords_raw)
             clean_keyword = group_match.group(0).capitalize() if group_match else ""
 
-            # STRICT CHECK: Name must contain characters
+            # Strict check: Name must be non-empty
             if raw_name and raw_name.strip():
                 data.append({
                     "Student Name": clean_name(raw_name),
@@ -162,6 +162,7 @@ def get_row_color(row, purple_groups, is_last_in_group):
     Priority: Red > Green > Orange > Yellow > Purple
     """
     # 0. SAFETY CHECK: Do not highlight if Name is missing
+    # This prevents ghost rows from getting highlighted
     if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
         return None
 
@@ -181,8 +182,9 @@ def get_row_color(row, purple_groups, is_last_in_group):
     if is_last_in_group:
         return {"red": 0.8, "green": 1.0, "blue": 0.8} # Light Green
 
-    # 4. ORANGE (Group 1 AND Skill >= 2)
-    if group_num == 1 and skill_num >= 2:
+    # 4. ORANGE (Group 1 AND Skill >= 2 AND Class != Advanced)
+    # UPDATED RULE: Added 'advanced not in class_name' check
+    if group_num == 1 and skill_num >= 2 and "advanced" not in class_name_lower:
         return {"red": 1.0, "green": 0.9, "blue": 0.8} # Light Orange
 
     # 5. YELLOW (Group Blank)
@@ -227,11 +229,15 @@ def update_google_sheet_advanced(full_df):
     # --- 2. PROCESS DAYS ---
     days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Lost"]
     
-    # Cleanup "Sheet1" if it exists (default sheet)
+    # SAFE RESET STRATEGY:
+    # 1. Create a temporary "Safe" sheet so we never delete the last sheet (API error).
+    # 2. Loop through days: Delete old tab, Create new tab.
+    # 3. Delete the "Safe" sheet at the end.
+    
     try:
-        sheet1 = ss.worksheet("Sheet1")
-        ss.del_worksheet(sheet1)
-    except: pass
+        safe_ws = ss.add_worksheet(title="Processing_Temp", rows=1, cols=1)
+    except:
+        safe_ws = ss.worksheet("Processing_Temp")
 
     for day in days_order:
         if day == "Lost":
@@ -306,8 +312,9 @@ def update_google_sheet_advanced(full_df):
 
         # CREATE FRESH SHEET
         # Calculate needed cols: (7 data + 1 gap) * number of slots
-        total_cols = len(unique_times) * 8
+        total_cols = max(len(unique_times) * 8, 26) # Min 26 cols (A-Z)
         total_rows = len(final_values) + 20 # Buffer
+        
         ws = ss.add_worksheet(title=day, rows=total_rows, cols=total_cols)
 
         # Upload Data
@@ -350,6 +357,16 @@ def update_google_sheet_advanced(full_df):
 
         if requests:
             ss.batch_update({"requests": requests})
+
+    # Cleanup Temps
+    try:
+        ss.del_worksheet(safe_ws)
+    except: pass
+    
+    try:
+        sheet1 = ss.worksheet("Sheet1")
+        ss.del_worksheet(sheet1)
+    except: pass
 
     return f"https://docs.google.com/spreadsheets/d/{ss.id}"
 

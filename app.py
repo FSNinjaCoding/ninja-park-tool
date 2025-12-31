@@ -8,7 +8,7 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-st.set_page_config(page_title="Ninja Park Processor 3.5", layout="wide")
+st.set_page_config(page_title="Ninja Park Processor 3.6", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -30,12 +30,18 @@ def abbreviate_class_name(name):
     return name
 
 def parse_class_info(class_name):
+    """
+    Extracts Day and Time. 
+    Handles 'Mon', 'Tue', etc.
+    """
     if not isinstance(class_name, str) or class_name == "Not Found":
         return "Lost", 9999, ""
     
+    # Extract Day (Matches Mon, Tue, Wed, Thu, Fri case-insensitive)
     day_match = re.search(r'\b(Mon|Tue|Wed|Thu|Fri)\b', class_name, re.IGNORECASE)
     day = day_match.group(1).title() if day_match else "Lost"
     
+    # Extract Start Time
     time_match = re.search(r'(\d{1,2}):(\d{2})', class_name)
     if time_match:
         hour = int(time_match.group(1))
@@ -50,10 +56,12 @@ def parse_class_info(class_name):
     return day, sort_time, time_str
 
 def parse_skill_number(skill_str):
+    # Extracts the first number found in string (e.g. "s3" -> 3)
     match = re.search(r'(\d+)', str(skill_str))
     return int(match.group(1)) if match else 0
 
 def parse_group_number(group_str):
+    # Extracts group number (e.g. "Group 1" -> 1)
     match = re.search(r'(\d+)', str(group_str))
     return int(match.group(1)) if match else 99
 
@@ -76,6 +84,7 @@ def parse_roll_sheet(uploaded_file):
         st.warning("⚠️ Formatting warning: Could not find standard class headers. Check HTML file.")
 
     for header in headers:
+        # Extract Name from Span to avoid dates
         name_span = header.find('span')
         if name_span:
             class_name_raw = name_span.get_text(strip=True)
@@ -172,49 +181,51 @@ def parse_student_list(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"])
     return df
 
-# --- FORMATTING LOGIC ---
+# --- FORMATTING LOGIC (New Rules v3.6) ---
 
 def get_base_row_format(row, day):
     """
-    Determines the Base Highlight (Red, Orange, Yellow) based on Day/Rules.
-    Does NOT handle Green (calculated dynamically later).
+    Calculates Red, Orange, and Yellow rules.
+    Green is calculated later because it is 'floating'.
     """
+    # 0. SAFETY
     if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
         return None
 
+    # 1. IGNORE RULE
     if "ignore" in str(row["RS Comment"]).lower():
         return None
 
     skill_num = parse_skill_number(row["Level"])
     group_num = parse_group_number(row["Keyword"])
     
-    # --- COLORS ---
+    # Define Colors
     COLOR_RED = {"red": 1.0, "green": 0.8, "blue": 0.8}
     COLOR_ORANGE = {"red": 1.0, "green": 0.9, "blue": 0.8}
     COLOR_YELLOW = {"red": 1.0, "green": 1.0, "blue": 0.8}
     
-    # 1. ORANGE RULE (Priority: Blank Group)
+    # 2. ORANGE: Blank Group
     if row["Keyword"] == "":
         return {"backgroundColor": COLOR_ORANGE}
 
-    # 2. RED RULE (Mon/Tue/Fri AND Skill >= 3) -> Bold Text & Red Background
+    # 3. RED: Mon/Tue/Fri AND Skill >= 3 -> Bold Text + Red
     if day in ["Mon", "Tue", "Fri"] and skill_num >= 3:
         return {
             "backgroundColor": COLOR_RED,
             "textFormat": {"bold": True}
         }
 
-    # 3. YELLOW RULE (Day Specific)
+    # 4. YELLOW RULES
     is_yellow = False
     
     if day in ["Mon", "Tue", "Fri"]:
-        # G1 >= s2 OR G2 == s0 OR G3 <= s1
+        # Rule: G1>=s2 OR G2==s0 OR G3<=s1
         if group_num == 1 and skill_num >= 2: is_yellow = True
         elif group_num == 2 and skill_num == 0: is_yellow = True
         elif group_num == 3 and skill_num <= 1: is_yellow = True
         
     elif day in ["Wed", "Thu"]:
-        # G1 >= s5 OR G2 == s3/s7+ OR G3 <= s5
+        # Rule: G1>=s5 OR G2==s3 OR G2>=s7 OR G3<=s5
         if group_num == 1 and skill_num >= 5: is_yellow = True
         elif group_num == 2 and (skill_num == 3 or skill_num >= 7): is_yellow = True
         elif group_num == 3 and skill_num <= 5: is_yellow = True
@@ -240,7 +251,7 @@ def update_google_sheet_advanced(full_df):
         st.error(f"Could not open sheet: {e}")
         return None
 
-    # --- 1. RENAME COLUMNS ---
+    # Rename Columns
     full_df = full_df.rename(columns={
         "Attendance": "Attend#",
         "Student Keyword": "Keyword",
@@ -248,9 +259,10 @@ def update_google_sheet_advanced(full_df):
         "Roll Sheet Comment": "RS Comment"
     })
 
-    # --- 2. PROCESS DAYS ---
+    # Process Days
     days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Lost"]
     
+    # Cleanup Default Sheet
     try:
         sheet1 = ss.worksheet("Sheet1")
         ss.del_worksheet(sheet1)
@@ -264,13 +276,13 @@ def update_google_sheet_advanced(full_df):
             
         if day_df.empty: continue
 
-        # Nuclear Recreate
+        # Recreate Tab
         try:
             old_ws = ss.worksheet(day)
             ss.del_worksheet(old_ws)
         except: pass 
 
-        # --- CONSTRUCT GRID ---
+        # Construct Grid
         unique_times = sorted(day_df['Sort Time'].unique())
         slot_data_map = {}
         max_rows = 0
@@ -293,7 +305,7 @@ def update_google_sheet_advanced(full_df):
             for c in export_cols:
                 if c not in time_df.columns: time_df[c] = ""
             
-            # Insert Blank Rows & Prep for Formatting
+            # Insert Blank Rows
             records = time_df.to_dict('records')
             final_records = []
             
@@ -320,7 +332,7 @@ def update_google_sheet_advanced(full_df):
             slot_data_map[i] = final_block
             if len(final_block) > max_rows: max_rows = len(final_block)
 
-        # Build Grid Values
+        # Build Headers & Data
         headers = []
         for _ in unique_times:
             headers.extend(export_cols)
@@ -343,13 +355,13 @@ def update_google_sheet_advanced(full_df):
                 row_data.append("")
             final_values.append(row_data)
 
-        # Create Sheet
+        # Write to Sheet
         total_cols = max(len(unique_times) * 8, 26) 
         total_rows = len(final_values) + 20 
         ws = ss.add_worksheet(title=day, rows=total_rows, cols=total_cols)
         ws.update(range_name="A1", values=final_values)
         
-        # --- BATCH FORMATTING ---
+        # --- BATCH FORMATTING (Floating Green + Base Rules) ---
         requests = []
         COLOR_GREEN = {"red": 0.8, "green": 1.0, "blue": 0.8}
         
@@ -358,13 +370,13 @@ def update_google_sheet_advanced(full_df):
             df = slot_data_map[i]
             records = df.to_dict('records')
             
-            # 1. Base Formats (Red, Orange, Yellow)
+            # 1. Apply Base Formats (Red, Orange, Yellow)
             row_formats = [None] * len(records)
             for idx, row in enumerate(records):
                 if row.get('_is_blank_separator'): continue
                 row_formats[idx] = get_base_row_format(row, day)
 
-            # 2. Floating Green (Group 1 & 2 ONLY)
+            # 2. Apply Floating Green (Group 1 & 2 Only)
             group_indices = {} 
             for idx, row in enumerate(records):
                 if row.get('_is_blank_separator') or not row.get('_original_group_id'): continue
@@ -373,23 +385,16 @@ def update_google_sheet_advanced(full_df):
                 group_indices[g_id].append(idx)
             
             for g_id, indices in group_indices.items():
-                # RULE: Only apply green highlight to Group 1 (id=1) and Group 2 (id=2)
-                if g_id not in [1, 2]:
-                    continue
+                if g_id not in [1, 2]: continue # Only Group 1 and 2
 
                 indices.sort()
-                
-                # Check from bottom up
+                # Find last available slot from bottom up
                 for idx in reversed(indices):
                     if row_formats[idx] is None:
-                        # Found valid spot
                         row_formats[idx] = {"backgroundColor": COLOR_GREEN}
                         break
-                    else:
-                        # Spot taken, float up
-                        pass
             
-            # 3. Generate Requests
+            # 3. Create API Requests
             for row_idx, fmt in enumerate(row_formats):
                 if fmt:
                     sheet_row_index = row_idx + 1
@@ -432,7 +437,7 @@ def update_google_sheet_advanced(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.5")
+st.title("🥷 Ninja Park Data Processor 3.6")
 st.write("Dashboard Layout with Advanced Logic")
 
 col1, col2 = st.columns(2)

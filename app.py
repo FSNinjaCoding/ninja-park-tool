@@ -8,8 +8,8 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-# VERSION UPDATE: 3.7
-st.set_page_config(page_title="Ninja Park Processor 3.7", layout="wide")
+# VERSION UPDATE: 3.8
+st.set_page_config(page_title="Ninja Park Processor 3.8", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -277,7 +277,7 @@ def update_google_sheet_advanced(full_df):
         unique_times = sorted(day_df['Sort Time'].unique())
         slot_data_map = {}
         slot_format_map = {}
-        slot_border_ranges = {} # Stores list of (start_row, end_row) tuples relative to slot start
+        slot_border_ranges = {} 
         max_rows = 0
         
         # --- BUILD STRUCTURE PER TIME SLOT ---
@@ -286,8 +286,6 @@ def update_google_sheet_advanced(full_df):
             
             # Helper to sort
             def get_sorted_group(grp_num):
-                # Filter by group number logic
-                # 99 is blank/other
                 mask = time_df['Keyword'].apply(lambda x: parse_group_number(x) == grp_num)
                 grp_df = time_df[mask].copy()
                 
@@ -300,11 +298,9 @@ def update_google_sheet_advanced(full_df):
                     ascending=[True, True, True]
                 )
 
-            # 1. Get Sorted Groups
             g1 = get_sorted_group(1)
             g2 = get_sorted_group(2)
             g3 = get_sorted_group(3)
-            # Catch leftovers (Group 99/Blank)
             g_other = time_df[~time_df.index.isin(g1.index.union(g2.index).union(g3.index))].copy()
 
             final_records = []
@@ -317,46 +313,35 @@ def update_google_sheet_advanced(full_df):
                 rows = df_group.to_dict('records')
                 count = len(rows)
                 
-                # Logic: Ensure at least 7 rows. 
-                # If < 7, add "open" rows AT THE TOP.
                 needed = max(0, 7 - count)
-                
-                # Get class name context from first row if exists, else generic
-                c_name = rows[0]['Class Name'] if rows else ""
                 
                 open_rows = []
                 for _ in range(needed):
                     open_rows.append({
                         "Student Name": "open",
                         "Age": "", "Attend#": "", 
-                        "Keyword": f"Group {label_num}", 
-                        "Level": f"s0", # Default s0 for Open
-                        "Class Name": c_name, 
+                        "Keyword": "",   # BLANK for open rows
+                        "Level": "",     # BLANK for open rows
+                        "Class Name": "",# BLANK for open rows
                         "RS Comment": ""
                     })
                 
-                # Combine: Open + Actual
                 block = open_rows + rows
                 
-                # Calculate Border Range
-                # Start index is current len(final_records) + 1 (because Sheet rows are 1-based and we have a header, but here we track relative 0-based index)
-                # Actually, simpler: track relative index in the list
                 start_idx = len(final_records) 
                 end_idx = start_idx + len(block) - 1
                 
                 border_ranges.append((start_idx, end_idx))
                 final_records.extend(block)
                 
-                # Add Spacer Row after group
                 spacer = {c: "" for c in export_cols}
-                final_records.append(spacer)
+                final_records.extend([spacer])
 
             # Build the Stack
             add_group_block(g1, 1)
             add_group_block(g2, 2)
             add_group_block(g3, 3)
             
-            # Add leftovers (no borders, just listed)
             if not g_other.empty:
                 final_records.extend(g_other.to_dict('records'))
 
@@ -448,14 +433,10 @@ def update_google_sheet_advanced(full_df):
                         })
             
             # B. Borders
-            # Ranges are relative to the data block (0-based start, but data starts at Row 2 in Sheet)
             ranges = slot_border_ranges[i]
             for (start_r, end_r) in ranges:
-                # Convert to Sheet Coordinates
-                # Sheet Row 1 = Header. Data starts Row 2.
-                # So index 0 in data = Row 2 in sheet (Index 1)
                 sheet_start_row = start_r + 1 
-                sheet_end_row = end_r + 2 # End index is exclusive in API
+                sheet_end_row = end_r + 2 
                 
                 requests.append({
                     "updateBorders": {
@@ -489,7 +470,7 @@ def update_google_sheet_advanced(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.7")
+st.title("🥷 Ninja Park Data Processor 3.8")
 st.write("Dashboard Layout: 7-Row Groups with Borders")
 
 col1, col2 = st.columns(2)

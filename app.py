@@ -6,7 +6,6 @@ from oauth2client.service_account import ServiceAccountCredentials
 import re
 
 # --- CONFIGURATION ---
-# The exact name of the Google Sheet you created in your Drive
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
 st.set_page_config(page_title="Ninja Park Processor", layout="wide")
@@ -93,21 +92,31 @@ def parse_student_list(uploaded_file):
         # Detect Headers to find column indices
         headers = [c.get_text(strip=True).lower() for c in rows[0].find_all(['td', 'th'])]
         
+        # Defaults based on your file structure:
+        # ['', 'Student Name', 'Attendance...', 'Age', 'Student Keywords', 'Roll Sheet Comment']
         name_idx = 1
+        att_idx = 2
         age_idx = 3
         key_idx = 4
+        comm_idx = 5
         
+        # Dynamic search to be safe
         for i, h in enumerate(headers):
             if "student name" in h: name_idx = i
             elif "age" in h: age_idx = i
             elif "keyword" in h: key_idx = i
+            elif "attendance" in h: att_idx = i
+            elif "comment" in h: comm_idx = i
 
         # Parse Data Rows
         for row in rows[1:]:
             cols = row.find_all(['td', 'th'])
-            if len(cols) > max(name_idx, age_idx, key_idx):
+            # Ensure we have enough columns to grab everything
+            if len(cols) > max(name_idx, age_idx, key_idx, att_idx, comm_idx):
                 raw_name = cols[name_idx].get_text(strip=True)
                 age = cols[age_idx].get_text(strip=True)
+                attendance = cols[att_idx].get_text(strip=True)
+                comment = cols[comm_idx].get_text(strip=True)
                 keywords_raw = cols[key_idx].get_text(strip=True).lower()
                 
                 # Filter Keywords: Group 1, 2, or 3
@@ -118,6 +127,8 @@ def parse_student_list(uploaded_file):
                     data.append({
                         "Student Name": clean_name(raw_name),
                         "Age": age,
+                        "Attendance": attendance,
+                        "Roll Sheet Comment": comment,
                         "Student Keyword": clean_keyword
                     })
 
@@ -137,7 +148,7 @@ def update_google_sheet(df):
     client = gspread.authorize(creds)
 
     try:
-        # We only OPEN the sheet, we do not create it.
+        # Open existing sheet
         sheet = client.open(GOOGLE_SHEET_NAME).sheet1
         
         # Clear and Update
@@ -184,8 +195,15 @@ if roll_file and list_file:
             merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
             merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")
             
-            # Reorder
-            final_df = merged_df[["Student Name", "Age", "Student Keyword", "Skill Level", "Class Name"]]
+            # Define Final Columns including the new ones
+            final_cols = ["Student Name", "Age", "Attendance", "Roll Sheet Comment", "Student Keyword", "Skill Level", "Class Name"]
+            
+            # Ensure columns exist (just in case)
+            for col in final_cols:
+                if col not in merged_df.columns:
+                    merged_df[col] = ""
+            
+            final_df = merged_df[final_cols]
             
             st.success(f"Matched {len(final_df)} students!")
             st.dataframe(final_df, use_container_width=True)
@@ -204,7 +222,6 @@ if roll_file and list_file:
                     link = update_google_sheet(final_df)
                     if link:
                         st.success("Google Sheet Updated!")
-                        # FORCE NEW TAB LINK to prevent reset
                         st.markdown(f'<a href="{link}" target="_blank" style="background-color:#0083B8;color:white;padding:10px;text-decoration:none;border-radius:5px;display:inline-block;">OPEN GOOGLE SHEET ⬈</a>', unsafe_allow_html=True)
                         
         except Exception as e:

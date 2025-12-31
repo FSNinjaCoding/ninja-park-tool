@@ -13,74 +13,75 @@ st.set_page_config(page_title="Ninja Park Processor", layout="wide")
 def clean_name(name):
     """Standardizes names (Title Case, no extra spaces)."""
     if not isinstance(name, str): return ""
+    # Remove any leading numbers like "1. " or "1 " if they accidentally get caught
+    # But usually parsing by column index avoids this.
     return re.sub(r'\s+', ' ', name).strip().title()
-
-def find_header_indices(row_cells):
-    """
-    Scans a row of cells to see if it's a header row.
-    Returns a dict of found columns: {'student': 0, 'age': 2, ...}
-    """
-    headers = {}
-    for idx, cell in enumerate(row_cells):
-        text = cell.get_text(strip=True).lower()
-        if "student" in text: headers['student'] = idx
-        elif "age" in text: headers['age'] = idx
-        elif "keyword" in text: headers['keywords'] = idx
-        elif "level" in text: headers['level'] = idx
-    return headers
 
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
     
+    # The file consists of MANY small tables. 
+    # We iterate through them to track the "Current Class" context.
     tables = soup.find_all('table')
-    for table in tables:
-        # 1. Try to find the Class Name (usually above the table)
-        class_name = "Unknown Class"
-        # Look for the nearest header or bold text preceding the table
-        previous = table.find_previous(['h1', 'h2', 'h3', 'div', 'strong', 'span'], string=re.compile(r'.+'))
-        if previous:
-            class_name = previous.get_text(strip=True)
-
-        rows = table.find_all('tr')
-        
-        # 2. Dynamic Header Detection
-        col_map = {} 
-        
-        for row in rows:
-            cols = row.find_all(['td', 'th'])
-            # If we haven't found headers yet, check if this row is the header
-            if not col_map:
-                found = find_header_indices(cols)
-                if 'student' in found: # Found the header row!
-                    col_map = found
-                    continue # Skip this row, it's just headers
-            
-            # 3. Extract Data using the map
-            if col_map and len(cols) > max(col_map.values()):
-                # Get Student Name
-                raw_name = cols[col_map['student']].get_text(strip=True)
-                
-                # Get Skill Level (if 'level' column exists, use it; otherwise check col 1 as fallback)
-                details_text = ""
-                if 'level' in col_map:
-                    details_text = cols[col_map['level']].get_text(strip=True).lower()
-                elif len(cols) > 1: # Fallback: usually column 1 in roll sheets
-                    details_text = cols[1].get_text(strip=True).lower()
-
-                # Extract Skill (s0-s10)
-                skill_level = "s0"
-                skill_match = re.search(r's([0-9]|10)\b', details_text)
-                if skill_match:
-                    skill_level = skill_match.group(0)
-
-                if raw_name and "student" not in raw_name.lower():
-                    data.append({
-                        "Student Name": clean_name(raw_name),
-                        "Skill Level": skill_level,
-                        "Class Name": class_name
-                    })
     
+    current_class_name = "Unknown Class"
+    
+    for table in tables:
+        rows = table.find_all('tr')
+        if not rows: continue
+        
+        # Check first row to see what kind of table this is
+        first_row_cols = [c.get_text(strip=True) for c in rows[0].find_all(['td', 'th'])]
+        
+        # CASE 1: Class Header Table
+        # Example: ['Advanced Ninja... | Thu: 6:00', '12/29...']
+        # We identify it by the pipe "|" character or specific keywords
+        if len(first_row_cols) > 0 and ("|" in first_row_cols[0] or "Ninja" in first_row_cols[0]):
+            # Verify it's not a student row
+            if "Student" not in first_row_cols[0]: 
+                current_class_name = first_row_cols[0]
+                continue
+
+        # CASE 2: Student Data Table
+        # Header row usually looks like: ['', 'Student', '', 'Details', 'Date...']
+        # We look for "Student" in the header to confirm it's a data table
+        is_student_table = False
+        name_idx = 1 # Default based on inspection
+        detail_idx = 3 # Default based on inspection
+        
+        # Check header row
+        for idx, col_text in enumerate(first_row_cols):
+            if "Student" in col_text:
+                is_student_table = True
+                name_idx = idx
+                # usually Details is name_idx + 2, but let's find it
+                for sub_idx, sub_text in enumerate(first_row_cols):
+                    if "Details" in sub_text:
+                        detail_idx = sub_idx
+                break
+        
+        if is_student_table:
+            # Iterate through the student rows (skip header)
+            for row in rows[1:]:
+                cols = row.find_all(['td', 'th'])
+                if len(cols) > max(name_idx, detail_idx):
+                    raw_name = cols[name_idx].get_text(strip=True)
+                    details_text = cols[detail_idx].get_text(strip=True).lower()
+                    
+                    # Extract Skill Level (S1-S10)
+                    skill_level = "s0"
+                    skill_match = re.search(r's([0-9]|10)\b', details_text)
+                    if skill_match:
+                        skill_level = skill_match.group(0)
+                    
+                    if raw_name:
+                        data.append({
+                            "Student Name": clean_name(raw_name),
+                            "Skill Level": skill_level,
+                            "Class Name": current_class_name
+                        })
+
     df = pd.DataFrame(data)
     if not df.empty:
         df = df.drop_duplicates(subset=["Student Name"], keep='first')
@@ -91,39 +92,39 @@ def parse_student_list(uploaded_file):
     data = []
     tables = soup.find_all('table')
     
+    # The student list is usually just ONE big table
     for table in tables:
         rows = table.find_all('tr')
-        col_map = {}
+        if not rows: continue
         
-        for row in rows:
-            cols = row.find_all(['td', 'th'])
-            
-            # 1. Find Headers dynamically
-            if not col_map:
-                found = find_header_indices(cols)
-                if 'student' in found and 'age' in found:
-                    col_map = found
-                    continue
-            
-            # 2. Extract Data
-            if col_map and len(cols) > max(col_map.values()):
-                raw_name = cols[col_map['student']].get_text(strip=True)
-                
-                # Get Age
-                age = cols[col_map['age']].get_text(strip=True)
-                
-                # Get Keyword (fallback to checking likely columns if not found)
-                keywords_raw = ""
-                if 'keywords' in col_map:
-                    keywords_raw = cols[col_map['keywords']].get_text(strip=True).lower()
-                elif len(cols) >= 4: # Fallback index
-                    keywords_raw = cols[3].get_text(strip=True).lower()
+        # Detect Headers
+        headers = [c.get_text(strip=True).lower() for c in rows[0].find_all(['td', 'th'])]
+        
+        # Default indices based on your file inspection
+        # Row 0: ['', 'Student Name', 'Attendance...', 'Age', 'Student Keywords', ...]
+        name_idx = 1
+        age_idx = 3
+        key_idx = 4
+        
+        # Try to find dynamic indices if headers exist
+        for i, h in enumerate(headers):
+            if "student name" in h: name_idx = i
+            elif "age" in h: age_idx = i
+            elif "keyword" in h: key_idx = i
 
-                # Clean Keyword
+        # Parse Data Rows
+        for row in rows[1:]:
+            cols = row.find_all(['td', 'th'])
+            if len(cols) > max(name_idx, age_idx, key_idx):
+                raw_name = cols[name_idx].get_text(strip=True)
+                age = cols[age_idx].get_text(strip=True)
+                keywords_raw = cols[key_idx].get_text(strip=True).lower()
+                
+                # Filter Keywords: Only keep Group 1, Group 2, or Group 3
                 group_match = re.search(r'(group\s*[1-3])', keywords_raw)
                 clean_keyword = group_match.group(0).capitalize() if group_match else ""
 
-                if raw_name and "student" not in raw_name.lower():
+                if raw_name:
                     data.append({
                         "Student Name": clean_name(raw_name),
                         "Age": age,
@@ -162,6 +163,7 @@ def update_google_sheet(df):
 
 # --- MAIN UI ---
 st.title("🥷 Ninja Park Data Processor")
+st.write("Upload your iClassPro HTML files below.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -169,25 +171,16 @@ with col1:
 with col2:
     list_file = st.file_uploader("2. Upload Student List", type=['html', 'htm'])
 
-# --- DEBUG EXPANDER ---
-# This lets you see the raw tables if something goes wrong
-with st.expander("🕵️ Debug / Inspector (Click if data is missing)"):
-    if roll_file:
-        roll_file.seek(0)
-        st.write("Preview of Roll Sheet Columns found:")
-        try:
-            debug_df = pd.read_html(roll_file)[0]
-            st.write(debug_df.head())
-        except: st.write("Could not auto-read HTML table.")
-
+# --- DEBUG INFO ---
 if roll_file and list_file:
-    # Reset pointers for processing
+    # Reset file pointers
     roll_file.seek(0)
     list_file.seek(0)
     
     st.divider()
     with st.spinner('Processing...'):
         try:
+            # Parse
             df_roll = parse_roll_sheet(roll_file.read())
             df_list = parse_student_list(list_file.read())
 
@@ -201,20 +194,14 @@ if roll_file and list_file:
             merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
             merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")
             
-            # Final Columns
-            cols_needed = ["Student Name", "Age", "Student Keyword", "Skill Level", "Class Name"]
-            # Ensure columns exist even if data is missing
-            for c in cols_needed:
-                if c not in merged_df.columns: merged_df[c] = ""
-            
-            final_df = merged_df[cols_needed]
+            # Reorder
+            final_df = merged_df[["Student Name", "Age", "Student Keyword", "Skill Level", "Class Name"]]
             
             st.success(f"Matched {len(final_df)} students!")
             st.dataframe(final_df, use_container_width=True)
             
             c1, c2 = st.columns(2)
             with c1:
-                # Fixed CSV output
                 st.download_button(
                     label="Download CSV",
                     data=final_df.to_csv(index=False).encode('utf-8'),
@@ -228,7 +215,7 @@ if roll_file and list_file:
                     if link:
                         st.success("Google Sheet Updated!")
                         # FORCE NEW TAB LINK
-                        st.markdown(f'<a href="{link}" target="_blank" style="background-color:#FF4B4B;color:white;padding:10px;text-decoration:none;border-radius:5px;display:block;text-align:center;">OPEN GOOGLE SHEET ⬈</a>', unsafe_allow_html=True)
+                        st.markdown(f'<a href="{link}" target="_blank" style="background-color:#0083B8;color:white;padding:10px;text-decoration:none;border-radius:5px;display:inline-block;">OPEN GOOGLE SHEET ⬈</a>', unsafe_allow_html=True)
                         
         except Exception as e:
             st.error(f"Error: {e}")

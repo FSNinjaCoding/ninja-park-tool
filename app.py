@@ -8,7 +8,7 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-st.set_page_config(page_title="Ninja Park Processor 3.1", layout="wide")
+st.set_page_config(page_title="Ninja Park Processor 3.2", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -61,7 +61,7 @@ def parse_age(age_str):
     match = re.search(r'(\d+)', str(age_str))
     return int(match.group(1)) if match else 99
 
-# --- PARSING LOGIC (Fixed Sourceline Crash) ---
+# --- PARSING LOGIC ---
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
@@ -83,15 +83,14 @@ def parse_roll_sheet(uploaded_file):
         # Safety: Ensure this table actually belongs to this header
         next_header = header.find_next('div', class_='full-width-header')
         
-        # FIXED: Safe line number comparison
+        # Safe line number comparison
         if table and next_header:
             h_line = next_header.sourceline
             t_line = table.sourceline
             
-            # Only compare if both line numbers exist (are not None)
             if h_line is not None and t_line is not None:
                 if h_line < t_line:
-                    continue # Table is further down than the next header -> belongs to next class
+                    continue # Table is further down than the next header
 
         if not table:
             continue
@@ -100,9 +99,8 @@ def parse_roll_sheet(uploaded_file):
         rows = table.find_all('tr')
         if not rows: continue
         
-        # Determine Column Indices dynamically
         first_row_cols = [c.get_text(strip=True) for c in rows[0].find_all(['td', 'th'])]
-        name_idx, detail_idx = 1, 3 # defaults
+        name_idx, detail_idx = 1, 3 
         
         for idx, col_text in enumerate(first_row_cols):
             if "Student" in col_text: name_idx = idx
@@ -176,12 +174,12 @@ def parse_student_list(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"])
     return df
 
-# --- COLOR LOGIC (Standard) ---
+# --- COLOR LOGIC (Updated Priority) ---
 
 def get_row_color(row, purple_groups, is_last_in_group):
     """
     Returns highlight color.
-    Priority: Red > Green > Orange > Yellow > Purple
+    New Priority: Red > Orange > Green > Yellow > Purple
     """
     # 0. SAFETY CHECK: Name must be present
     if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
@@ -199,13 +197,14 @@ def get_row_color(row, purple_groups, is_last_in_group):
     if "advanced" not in class_name_lower and skill_num >= 3:
         return {"red": 1.0, "green": 0.8, "blue": 0.8} # Light Red
 
-    # 3. GREEN (Last student in Group)
-    if is_last_in_group:
-        return {"red": 0.8, "green": 1.0, "blue": 0.8} # Light Green
-
-    # 4. ORANGE (Group 1 AND Skill >= 2 AND Class != Advanced)
+    # 3. ORANGE (Group 1 AND Skill >= 2 AND Class != Advanced)
+    # Moved UP in priority
     if group_num == 1 and skill_num >= 2 and "advanced" not in class_name_lower:
         return {"red": 1.0, "green": 0.9, "blue": 0.8} # Light Orange
+
+    # 4. GREEN (Last student in Group)
+    if is_last_in_group:
+        return {"red": 0.8, "green": 1.0, "blue": 0.8} # Light Green
 
     # 5. YELLOW (Group Blank)
     if row["Student Keyword"] == "":
@@ -298,8 +297,44 @@ def update_google_sheet_advanced(full_df):
             for c in export_cols:
                 if c not in time_df.columns: time_df[c] = ""
             
-            final_block = time_df[export_cols + ['is_last_in_group']]
+            # --- INSERT EMPTY ROWS BETWEEN GROUPS ---
+            # We convert to a list of dicts to easily insert rows
+            records = time_df.to_dict('records')
+            final_records = []
             
+            if records:
+                prev_group = records[0]['sort_group']
+                final_records.append(records[0])
+                
+                for rec in records[1:]:
+                    curr_group = rec['sort_group']
+                    
+                    # If group changed (e.g. 1->2 or 2->3), insert blank row
+                    if curr_group != prev_group:
+                        # Create empty dict with empty strings for all columns
+                        blank_row = {col: "" for col in export_cols}
+                        # Important: Mark it as NOT last in group so it doesn't get green
+                        blank_row['is_last_in_group'] = False
+                        # Add extra metadata to pass safely through color logic
+                        blank_row['Class Name'] = ""
+                        blank_row['Student Keyword'] = ""
+                        blank_row['Skill Level'] = ""
+                        
+                        final_records.append(blank_row)
+                    
+                    final_records.append(rec)
+                    prev_group = curr_group
+            
+            # Rebuild DataFrame from the modified list
+            final_block = pd.DataFrame(final_records)
+            
+            # Make sure we didn't lose columns if list was empty (unlikely but safe)
+            if final_block.empty:
+                final_block = pd.DataFrame(columns=export_cols + ['is_last_in_group'])
+            else:
+                # Ensure only needed cols are kept
+                final_block = final_block[export_cols + ['is_last_in_group']]
+
             slot_data_map[i] = final_block
             if len(final_block) > max_rows: max_rows = len(final_block)
 
@@ -341,7 +376,9 @@ def update_google_sheet_advanced(full_df):
             for row_idx, row_data in enumerate(records):
                 sheet_row_index = row_idx + 1 # +1 for header
                 
-                color = get_row_color(row_data, purple_groups, row_data['is_last_in_group'])
+                # We skip highlighting for our inserted blank rows automatically
+                # because get_row_color returns None if Name is empty
+                color = get_row_color(row_data, purple_groups, row_data.get('is_last_in_group', False))
                 
                 if color:
                     requests.append({
@@ -371,7 +408,7 @@ def update_google_sheet_advanced(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.1")
+st.title("🥷 Ninja Park Data Processor 3.2")
 st.write("Dashboard Layout with Advanced Logic")
 
 col1, col2 = st.columns(2)

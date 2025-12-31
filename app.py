@@ -8,7 +8,7 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-st.set_page_config(page_title="Ninja Park Processor 3.6", layout="wide")
+st.set_page_config(page_title="Ninja Park Processor 3.7", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -18,26 +18,29 @@ def clean_name(name):
     clean = re.sub(r'\s+', ' ', name).replace(u'\xa0', ' ').strip()
     return clean.title()
 
-def abbreviate_class_name(name):
-    """Shortens class names to save space."""
+def clean_class_name(name):
+    """
+    Removes the date range from the end of the class string.
+    Example: "FS Ninjas | Mon: 3:40 12/29/2025..." -> "FS Ninjas | Mon: 3:40"
+    """
     if not isinstance(name, str): return name
-    # Remove date ranges
-    name = re.sub(r'\d{1,2}/\d{1,2}/\d{4}.*', '', name).strip()
+    # Regex to find a date (e.g., 12/29/2025) and remove everything after it
+    clean = re.sub(r'\s\d{1,2}/\d{1,2}/\d{4}.*', '', name).strip()
     
-    name = name.replace("Homeschool", "HS")
-    name = name.replace("Flip Side Ninjas", "FS Ninjas")
-    name = name.replace("(Ages ", "(")
-    return name
+    # Standard Abbreviations
+    clean = clean.replace("Homeschool", "HS")
+    clean = clean.replace("Flip Side Ninjas", "FS Ninjas")
+    clean = clean.replace("(Ages ", "(")
+    return clean
 
 def parse_class_info(class_name):
     """
-    Extracts Day and Time. 
-    Handles 'Mon', 'Tue', etc.
+    Extracts Day and Time from Class Name.
     """
     if not isinstance(class_name, str) or class_name == "Not Found":
         return "Lost", 9999, ""
     
-    # Extract Day (Matches Mon, Tue, Wed, Thu, Fri case-insensitive)
+    # Extract Day
     day_match = re.search(r'\b(Mon|Tue|Wed|Thu|Fri)\b', class_name, re.IGNORECASE)
     day = day_match.group(1).title() if day_match else "Lost"
     
@@ -56,12 +59,10 @@ def parse_class_info(class_name):
     return day, sort_time, time_str
 
 def parse_skill_number(skill_str):
-    # Extracts the first number found in string (e.g. "s3" -> 3)
     match = re.search(r'(\d+)', str(skill_str))
     return int(match.group(1)) if match else 0
 
 def parse_group_number(group_str):
-    # Extracts group number (e.g. "Group 1" -> 1)
     match = re.search(r'(\d+)', str(group_str))
     return int(match.group(1)) if match else 99
 
@@ -84,18 +85,14 @@ def parse_roll_sheet(uploaded_file):
         st.warning("⚠️ Formatting warning: Could not find standard class headers. Check HTML file.")
 
     for header in headers:
-        # Extract Name from Span to avoid dates
-        name_span = header.find('span')
-        if name_span:
-            class_name_raw = name_span.get_text(strip=True)
-        else:
-            class_name_raw = header.get_text(separator=" ", strip=True)
-            
+        # Get full text (safest way to catch "Mon: 3:40")
+        class_name_raw = header.get_text(separator=" ", strip=True)
         current_class_name = class_name_raw if class_name_raw else "Unknown Class"
         
         table = header.find_next('table', class_='table-roll-sheet')
         next_header = header.find_next('div', class_='full-width-header')
         
+        # Ensure table belongs to this header
         if table and next_header:
             h_line = next_header.sourceline
             t_line = table.sourceline
@@ -181,51 +178,49 @@ def parse_student_list(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"])
     return df
 
-# --- FORMATTING LOGIC (New Rules v3.6) ---
+# --- FORMATTING LOGIC ---
 
 def get_base_row_format(row, day):
     """
-    Calculates Red, Orange, and Yellow rules.
-    Green is calculated later because it is 'floating'.
+    Returns Base Highlights (Red, Orange, Yellow).
+    Green is calculated dynamically later.
     """
-    # 0. SAFETY
     if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
         return None
 
-    # 1. IGNORE RULE
     if "ignore" in str(row["RS Comment"]).lower():
         return None
 
     skill_num = parse_skill_number(row["Level"])
     group_num = parse_group_number(row["Keyword"])
     
-    # Define Colors
+    # COLORS
     COLOR_RED = {"red": 1.0, "green": 0.8, "blue": 0.8}
     COLOR_ORANGE = {"red": 1.0, "green": 0.9, "blue": 0.8}
     COLOR_YELLOW = {"red": 1.0, "green": 1.0, "blue": 0.8}
     
-    # 2. ORANGE: Blank Group
+    # 1. ORANGE (Blank Group)
     if row["Keyword"] == "":
         return {"backgroundColor": COLOR_ORANGE}
 
-    # 3. RED: Mon/Tue/Fri AND Skill >= 3 -> Bold Text + Red
+    # 2. RED (Mon/Tue/Fri AND Skill >= 3) -> Bold + Red
     if day in ["Mon", "Tue", "Fri"] and skill_num >= 3:
         return {
             "backgroundColor": COLOR_RED,
             "textFormat": {"bold": True}
         }
 
-    # 4. YELLOW RULES
+    # 3. YELLOW (Complex Matrix)
     is_yellow = False
     
     if day in ["Mon", "Tue", "Fri"]:
-        # Rule: G1>=s2 OR G2==s0 OR G3<=s1
+        # Rule: G1>=2 OR G2==0 OR G3<=1
         if group_num == 1 and skill_num >= 2: is_yellow = True
         elif group_num == 2 and skill_num == 0: is_yellow = True
         elif group_num == 3 and skill_num <= 1: is_yellow = True
         
     elif day in ["Wed", "Thu"]:
-        # Rule: G1>=s5 OR G2==s3 OR G2>=s7 OR G3<=s5
+        # Rule: G1>=5 OR G2==3 OR G2>=7 OR G3<=5
         if group_num == 1 and skill_num >= 5: is_yellow = True
         elif group_num == 2 and (skill_num == 3 or skill_num >= 7): is_yellow = True
         elif group_num == 3 and skill_num <= 5: is_yellow = True
@@ -251,7 +246,7 @@ def update_google_sheet_advanced(full_df):
         st.error(f"Could not open sheet: {e}")
         return None
 
-    # Rename Columns
+    # --- 1. RENAME COLUMNS ---
     full_df = full_df.rename(columns={
         "Attendance": "Attend#",
         "Student Keyword": "Keyword",
@@ -259,10 +254,9 @@ def update_google_sheet_advanced(full_df):
         "Roll Sheet Comment": "RS Comment"
     })
 
-    # Process Days
+    # --- 2. PROCESS DAYS ---
     days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Lost"]
     
-    # Cleanup Default Sheet
     try:
         sheet1 = ss.worksheet("Sheet1")
         ss.del_worksheet(sheet1)
@@ -276,13 +270,12 @@ def update_google_sheet_advanced(full_df):
             
         if day_df.empty: continue
 
-        # Recreate Tab
         try:
             old_ws = ss.worksheet(day)
             ss.del_worksheet(old_ws)
         except: pass 
 
-        # Construct Grid
+        # --- CONSTRUCT GRID ---
         unique_times = sorted(day_df['Sort Time'].unique())
         slot_data_map = {}
         max_rows = 0
@@ -332,7 +325,7 @@ def update_google_sheet_advanced(full_df):
             slot_data_map[i] = final_block
             if len(final_block) > max_rows: max_rows = len(final_block)
 
-        # Build Headers & Data
+        # Build Headers
         headers = []
         for _ in unique_times:
             headers.extend(export_cols)
@@ -355,135 +348,8 @@ def update_google_sheet_advanced(full_df):
                 row_data.append("")
             final_values.append(row_data)
 
-        # Write to Sheet
+        # Create Sheet
         total_cols = max(len(unique_times) * 8, 26) 
         total_rows = len(final_values) + 20 
         ws = ss.add_worksheet(title=day, rows=total_rows, cols=total_cols)
         ws.update(range_name="A1", values=final_values)
-        
-        # --- BATCH FORMATTING (Floating Green + Base Rules) ---
-        requests = []
-        COLOR_GREEN = {"red": 0.8, "green": 1.0, "blue": 0.8}
-        
-        current_col_start = 0
-        for i in range(len(unique_times)):
-            df = slot_data_map[i]
-            records = df.to_dict('records')
-            
-            # 1. Apply Base Formats (Red, Orange, Yellow)
-            row_formats = [None] * len(records)
-            for idx, row in enumerate(records):
-                if row.get('_is_blank_separator'): continue
-                row_formats[idx] = get_base_row_format(row, day)
-
-            # 2. Apply Floating Green (Group 1 & 2 Only)
-            group_indices = {} 
-            for idx, row in enumerate(records):
-                if row.get('_is_blank_separator') or not row.get('_original_group_id'): continue
-                g_id = row['_original_group_id']
-                if g_id not in group_indices: group_indices[g_id] = []
-                group_indices[g_id].append(idx)
-            
-            for g_id, indices in group_indices.items():
-                if g_id not in [1, 2]: continue # Only Group 1 and 2
-
-                indices.sort()
-                # Find last available slot from bottom up
-                for idx in reversed(indices):
-                    if row_formats[idx] is None:
-                        row_formats[idx] = {"backgroundColor": COLOR_GREEN}
-                        break
-            
-            # 3. Create API Requests
-            for row_idx, fmt in enumerate(row_formats):
-                if fmt:
-                    sheet_row_index = row_idx + 1
-                    user_fmt = {}
-                    if "backgroundColor" in fmt: user_fmt["backgroundColor"] = fmt["backgroundColor"]
-                    if "textFormat" in fmt: user_fmt["textFormat"] = fmt["textFormat"]
-                    
-                    requests.append({
-                        "repeatCell": {
-                            "range": {
-                                "sheetId": ws.id,
-                                "startRowIndex": sheet_row_index,
-                                "endRowIndex": sheet_row_index + 1,
-                                "startColumnIndex": current_col_start,
-                                "endColumnIndex": current_col_start + len(export_cols)
-                            },
-                            "cell": {"userEnteredFormat": user_fmt},
-                            "fields": "userEnteredFormat(backgroundColor,textFormat)"
-                        }
-                    })
-            
-            current_col_start += (len(export_cols) + 1)
-
-        # 4. Auto-Fit
-        requests.append({
-            "autoResizeDimensions": {
-                "dimensions": {
-                    "sheetId": ws.id,
-                    "dimension": "COLUMNS",
-                    "startIndex": 0,
-                    "endIndex": total_cols
-                }
-            }
-        })
-
-        if requests:
-            ss.batch_update({"requests": requests})
-
-    return f"https://docs.google.com/spreadsheets/d/{ss.id}"
-
-
-# --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.6")
-st.write("Dashboard Layout with Advanced Logic")
-
-col1, col2 = st.columns(2)
-with col1:
-    roll_file = st.file_uploader("1. Upload Roll Sheet", type=['html', 'htm'])
-with col2:
-    list_file = st.file_uploader("2. Upload Student List", type=['html', 'htm'])
-
-if roll_file and list_file:
-    roll_file.seek(0)
-    list_file.seek(0)
-    
-    st.divider()
-    with st.spinner('Building Dashboard... (This may take 10-20 seconds)...'):
-        try:
-            df_roll = parse_roll_sheet(roll_file.read())
-            df_list = parse_student_list(list_file.read())
-
-            if df_roll.empty: st.warning("⚠️ No data in Roll Sheet.")
-            if df_list.empty: st.warning("⚠️ No data in Student List.")
-
-            merged_df = pd.merge(df_list, df_roll, on="Student Name", how="left")
-            
-            # FILTER
-            merged_df = merged_df[merged_df["Student Name"].str.strip().astype(bool)]
-            
-            # FILL
-            merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
-            merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")
-            
-            # ABBREVIATE NAMES
-            merged_df["Class Name"] = merged_df["Class Name"].apply(abbreviate_class_name)
-            
-            merged_df[['Sort Day', 'Sort Time', 'Time Str']] = merged_df['Class Name'].apply(
-                lambda x: pd.Series(parse_class_info(x))
-            )
-
-            merged_df.loc[merged_df['Sort Day'] == "Lost", 'Sort Day'] = "Lost"
-
-            st.success(f"Processed {len(merged_df)} students.")
-            
-            if st.button("Update Master Google Sheet", use_container_width=True):
-                link = update_google_sheet_advanced(merged_df)
-                if link:
-                    st.success("Google Sheet Updated Successfully!")
-                    st.markdown(f'<a href="{link}" target="_blank" style="background-color:#0083B8;color:white;padding:10px;text-decoration:none;border-radius:5px;display:inline-block;">OPEN GOOGLE SHEET ⬈</a>', unsafe_allow_html=True)
-                        
-        except Exception as e:
-            st.error(f"Detailed Error: {e}")

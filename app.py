@@ -4,12 +4,11 @@ from bs4 import BeautifulSoup
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import re
-from datetime import datetime
 
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-st.set_page_config(page_title="Ninja Park Processor", layout="wide")
+st.set_page_config(page_title="Ninja Park Processor 3.0", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -45,12 +44,10 @@ def parse_class_info(class_name):
     return day, sort_time, time_str
 
 def parse_skill_number(skill_str):
-    """Converts 's3' to integer 3 for sorting."""
     match = re.search(r'(\d+)', str(skill_str))
     return int(match.group(1)) if match else 0
 
 def parse_group_number(group_str):
-    """Converts 'Group 1' to integer 1 for sorting."""
     match = re.search(r'(\d+)', str(group_str))
     return int(match.group(1)) if match else 99
 
@@ -62,7 +59,7 @@ def parse_age(age_str):
     match = re.search(r'(\d+)', str(age_str))
     return int(match.group(1)) if match else 99
 
-# --- PARSING LOGIC ---
+# --- PARSING LOGIC (Standard) ---
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
@@ -155,43 +152,47 @@ def parse_student_list(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"])
     return df
 
-# --- HIGHLIGHTING LOGIC ---
+# --- COLOR LOGIC ---
 
-def get_row_color(row, purple_groups):
+def get_row_color(row, purple_groups, is_last_in_group):
     """
-    Returns highlight color based on Priority: Red > Orange > Yellow > Purple.
+    Returns highlight color.
+    Priority: Red > Green > Orange > Yellow > Purple
     """
+    # 0. IGNORE RULE: Check comment first
+    if "ignore" in str(row["Roll Sheet Comment"]).lower():
+        return None
+
     skill_num = parse_skill_number(row["Skill Level"])
     group_num = parse_group_number(row["Student Keyword"])
     class_name_lower = row["Class Name"].lower()
 
-    # PRIORITY 1: RED
-    # If class does NOT contain "advanced" AND skill is s3 or higher
+    # 1. RED (Class != Advanced AND Skill >= 3)
     if "advanced" not in class_name_lower and skill_num >= 3:
         return {"red": 1.0, "green": 0.8, "blue": 0.8} # Light Red
 
-    # PRIORITY 2: ORANGE
-    # If Group 1 has s2 or higher
+    # 2. GREEN (Last student in Group)
+    if is_last_in_group:
+        return {"red": 0.8, "green": 1.0, "blue": 0.8} # Light Green
+
+    # 3. ORANGE (Group 1 AND Skill >= 2)
     if group_num == 1 and skill_num >= 2:
         return {"red": 1.0, "green": 0.9, "blue": 0.8} # Light Orange
 
-    # PRIORITY 3: YELLOW
-    # If group is blank
+    # 4. YELLOW (Group Blank)
     if row["Student Keyword"] == "":
         return {"red": 1.0, "green": 1.0, "blue": 0.8} # Light Yellow
 
-    # PRIORITY 4: PURPLE
-    # If group has >2 skill levels AND class is NOT "Advanced", highlight max skill
-    # We check if this specific row is the "Max Skill" for its group
+    # 5. PURPLE (Max Skill in Mixed Group)
     group_key = (row['Class Name'], row['Student Keyword'])
     if group_key in purple_groups:
-        max_skill_in_group = purple_groups[group_key]
-        if skill_num == max_skill_in_group:
+        max_skill = purple_groups[group_key]
+        if skill_num == max_skill:
             return {"red": 0.85, "green": 0.8, "blue": 1.0} # Light Purple
 
-    return None # No highlight
+    return None
 
-def update_google_sheet_multitab(full_df):
+def update_google_sheet_advanced(full_df):
     if "gcp_service_account" not in st.secrets:
         st.error("Secrets not found!")
         return None
@@ -207,28 +208,20 @@ def update_google_sheet_multitab(full_df):
         st.error(f"Could not open sheet: {e}")
         return None
 
-    # --- PRE-CALCULATE PURPLE GROUPS ---
-    # Rule: Group must have >2 unique skill levels AND Class must NOT be "Advanced"
-    purple_groups = {} 
-    
+    # --- 1. PRE-CALCULATE PURPLE GROUPS ---
+    purple_groups = {}
     valid_data = full_df[full_df['Sort Day'] != 'Lost'].copy()
     valid_data['skill_int'] = valid_data['Skill Level'].apply(parse_skill_number)
     
     for (cls, grp), group_df in valid_data.groupby(['Class Name', 'Student Keyword']):
-        if not grp: continue # Skip blank groups
-        
-        # SKIP if class contains "Advanced"
-        if "advanced" in cls.lower(): 
-            continue 
-
-        unique_skills = group_df['skill_int'].unique()
-        if len(unique_skills) > 2:
+        if not grp or "advanced" in cls.lower(): continue
+        if len(group_df['skill_int'].unique()) > 2:
             purple_groups[(cls, grp)] = group_df['skill_int'].max()
 
-    # --- PROCESS TABS ---
+    # --- 2. PROCESS DAYS ---
     days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Lost"]
     
-    # Clean up old sheets
+    # Cleanup old sheets
     try:
         worksheets = ss.worksheets()
         if len(worksheets) > 1:
@@ -244,59 +237,99 @@ def update_google_sheet_multitab(full_df):
             
         if day_df.empty: continue
 
-        # SORTING
-        day_df['sort_group'] = day_df['Student Keyword'].apply(parse_group_number)
-        day_df['sort_skill'] = day_df['Skill Level'].apply(parse_skill_number)
-        day_df['sort_att'] = day_df['Attendance'].apply(parse_attendance)
-        day_df['sort_age'] = day_df['Age'].apply(parse_age)
-        
-        day_df = day_df.sort_values(
-            by=['Sort Time', 'sort_group', 'sort_skill', 'sort_att', 'sort_age'],
-            ascending=[True, True, True, True, True]
-        )
-        
-        # PREPARE EXPORT
-        export_cols = ["Student Name", "Age", "Attendance", "Student Keyword", "Skill Level", "Class Name", "Roll Sheet Comment"]
-        for c in export_cols:
-            if c not in day_df.columns: day_df[c] = ""
-        export_df = day_df[export_cols]
-
+        # Get Worksheet
         try:
             ws = ss.worksheet(day)
             ws.clear()
         except:
-            ws = ss.add_worksheet(title=day, rows=100, cols=20)
+            ws = ss.add_worksheet(title=day, rows=100, cols=100) # Wide sheet for side-by-side
+
+        # --- 3. PROCESS EACH TIME SLOT SIDE-BY-SIDE ---
+        # Get unique times for this day, sorted
+        unique_times = sorted(day_df['Sort Time'].unique())
         
-        ws.update([export_df.columns.values.tolist()] + export_df.values.tolist())
+        current_col_idx = 1 # Start at Column A
+        requests = [] # For batch formatting
         
-        # BATCH FORMATTING
-        requests = []
-        rows = export_df.to_dict('records')
+        # Column headers we want to display
+        export_cols = ["Student Name", "Age", "Attendance", "Student Keyword", "Skill Level", "Class Name", "Roll Sheet Comment"]
         
-        for i, row in enumerate(rows):
-            color = get_row_color(row, purple_groups)
-            if color:
-                requests.append({
-                    "repeatCell": {
-                        "range": {
-                            "sheetId": ws.id,
-                            "startRowIndex": i + 1,
-                            "endRowIndex": i + 2,
-                            "startColumnIndex": 0,
-                            "endColumnIndex": len(export_cols)
-                        },
-                        "cell": {
-                            "userEnteredFormat": {
-                                "backgroundColor": color
-                            }
-                        },
-                        "fields": "userEnteredFormat.backgroundColor"
-                    }
-                })
-        
+        for time_slot in unique_times:
+            # Filter Data for this specific time
+            time_df = day_df[day_df['Sort Time'] == time_slot].copy()
+            
+            # SORTING LOGIC
+            time_df['sort_group'] = time_df['Student Keyword'].apply(parse_group_number)
+            time_df['sort_skill'] = time_df['Skill Level'].apply(parse_skill_number)
+            time_df['sort_att'] = time_df['Attendance'].apply(parse_attendance)
+            time_df['sort_age'] = time_df['Age'].apply(parse_age)
+            
+            time_df = time_df.sort_values(
+                by=['sort_group', 'sort_skill', 'sort_att', 'sort_age'],
+                ascending=[True, True, True, True, True]
+            )
+            
+            # Determine "Last in Group" for Green Highlight
+            # We create a boolean mask: True if it's the last member of its group
+            time_df['is_last_in_group'] = time_df['Student Keyword'] != time_df['Student Keyword'].shift(-1)
+            # If group is blank, don't mark as green (optional, but usually safer)
+            time_df.loc[time_df['Student Keyword'] == "", 'is_last_in_group'] = False
+            
+            # Prepare Data Block
+            for c in export_cols:
+                if c not in time_df.columns: time_df[c] = ""
+            
+            final_data_block = time_df[export_cols]
+            
+            # Write Header + Data to Grid
+            # Convert to list of lists including header
+            values = [export_cols] + final_data_block.values.tolist()
+            
+            # Update cells (gspread uses row, col indices)
+            ws.update(
+                range_name=None, 
+                values=values, 
+                start_row=1, 
+                start_col=current_col_idx
+            )
+            
+            # Formatting Loop for this block
+            rows = final_data_block.to_dict('records')
+            is_last_list = time_df['is_last_in_group'].tolist()
+            
+            for i, row in enumerate(rows):
+                # +1 for header, +1 because sheets is 1-indexed -> Start at row 2
+                sheet_row = i + 1 
+                
+                color = get_row_color(row, purple_groups, is_last_list[i])
+                
+                if color:
+                    requests.append({
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": ws.id,
+                                "startRowIndex": sheet_row,     # Row index (0-based)
+                                "endRowIndex": sheet_row + 1,
+                                "startColumnIndex": current_col_idx - 1, # Col index (0-based)
+                                "endColumnIndex": current_col_idx - 1 + len(export_cols)
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": color
+                                }
+                            },
+                            "fields": "userEnteredFormat.backgroundColor"
+                        }
+                    })
+            
+            # Move Column Pointer: 7 columns of data + 1 empty column gap
+            current_col_idx += (len(export_cols) + 1)
+
+        # Batch Execute Formatting
         if requests:
             ss.batch_update({"requests": requests})
-        
+            
+        # Cleanup "Sheet1"
         if first_tab and len(ss.worksheets()) > 1:
             try:
                 sheet1 = ss.worksheet("Sheet1")
@@ -308,8 +341,8 @@ def update_google_sheet_multitab(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 2.0")
-st.write("Multi-Tab Edition with Priority Highlighting")
+st.title("🥷 Ninja Park Data Processor 3.0")
+st.write("Dashboard Layout with Advanced Logic")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -322,7 +355,7 @@ if roll_file and list_file:
     list_file.seek(0)
     
     st.divider()
-    with st.spinner('Parsing, Sorting & Coloring...'):
+    with st.spinner('Building Dashboard... (This may take 10-20 seconds)...'):
         try:
             df_roll = parse_roll_sheet(roll_file.read())
             df_list = parse_student_list(list_file.read())
@@ -344,7 +377,7 @@ if roll_file and list_file:
             st.success(f"Processed {len(merged_df)} students.")
             
             if st.button("Update Master Google Sheet", use_container_width=True):
-                link = update_google_sheet_multitab(merged_df)
+                link = update_google_sheet_advanced(merged_df)
                 if link:
                     st.success("Google Sheet Updated Successfully!")
                     st.markdown(f'<a href="{link}" target="_blank" style="background-color:#0083B8;color:white;padding:10px;text-decoration:none;border-radius:5px;display:inline-block;">OPEN GOOGLE SHEET ⬈</a>', unsafe_allow_html=True)

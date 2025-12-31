@@ -242,74 +242,116 @@ def update_google_sheet_advanced(full_df):
             ws = ss.worksheet(day)
             ws.clear()
         except:
-            ws = ss.add_worksheet(title=day, rows=100, cols=100) # Wide sheet for side-by-side
+            ws = ss.add_worksheet(title=day, rows=100, cols=100)
 
-        # --- 3. PROCESS EACH TIME SLOT SIDE-BY-SIDE ---
-        # Get unique times for this day, sorted
+        # --- 3. CONSTRUCT SIDE-BY-SIDE DATAFRAME IN PANDAS ---
+        # Instead of multiple updates, we build one big dataframe 'final_grid'
+        
         unique_times = sorted(day_df['Sort Time'].unique())
         
-        current_col_idx = 1 # Start at Column A
-        requests = [] # For batch formatting
-        
-        # Column headers we want to display
+        # We will collect data blocks and concat them axis=1
+        blocks = []
         export_cols = ["Student Name", "Age", "Attendance", "Student Keyword", "Skill Level", "Class Name", "Roll Sheet Comment"]
         
-        for time_slot in unique_times:
-            # Filter Data for this specific time
+        # Store metadata for coloring later (row_index, col_index -> row_data)
+        # However, since we concat, calculating exact row/col indices for coloring is tricky if blocks have diff lengths.
+        # So we will standardise length or just calculate offset.
+        
+        # Better approach for GSpread: 
+        # Calculate max rows needed. 
+        # We need to map: (Time Slot Index) -> (DataFrame for that slot)
+        
+        slot_data_map = {}
+        max_rows = 0
+        
+        for i, time_slot in enumerate(unique_times):
+            # Filter & Sort
             time_df = day_df[day_df['Sort Time'] == time_slot].copy()
-            
-            # SORTING LOGIC
             time_df['sort_group'] = time_df['Student Keyword'].apply(parse_group_number)
             time_df['sort_skill'] = time_df['Skill Level'].apply(parse_skill_number)
             time_df['sort_att'] = time_df['Attendance'].apply(parse_attendance)
             time_df['sort_age'] = time_df['Age'].apply(parse_age)
             
-            # FIXED SORTING CALL - Removed extra 'True'
             time_df = time_df.sort_values(
                 by=['sort_group', 'sort_skill', 'sort_att', 'sort_age'],
                 ascending=[True, True, True, True]
             )
             
-            # Determine "Last in Group" for Green Highlight
+            # Highlight Logic Helpers
             time_df['is_last_in_group'] = time_df['Student Keyword'] != time_df['Student Keyword'].shift(-1)
             time_df.loc[time_df['Student Keyword'] == "", 'is_last_in_group'] = False
             
-            # Prepare Data Block
+            # Ensure cols exist
             for c in export_cols:
                 if c not in time_df.columns: time_df[c] = ""
             
-            final_data_block = time_df[export_cols]
+            final_block = time_df[export_cols + ['is_last_in_group']] # Keep highlight helper
             
-            # Write Header + Data to Grid
-            values = [export_cols] + final_data_block.values.tolist()
-            
-            # Update cells (gspread uses row, col indices)
-            ws.update(
-                range_name=None, 
-                values=values, 
-                start_row=1, 
-                start_col=current_col_idx
-            )
-            
-            # Formatting Loop for this block
-            rows = final_data_block.to_dict('records')
-            is_last_list = time_df['is_last_in_group'].tolist()
-            
-            for i, row in enumerate(rows):
-                # +1 for header, +1 because sheets is 1-indexed -> Start at row 2
-                sheet_row = i + 1 
+            slot_data_map[i] = final_block
+            if len(final_block) > max_rows: max_rows = len(final_block)
+
+        # Now build the list of lists for GSpread
+        # Structure: Header Row, then Data Rows.
+        # We need to interleave: Block1, Empty, Block2, Empty...
+        
+        # 1. Headers
+        headers = []
+        for _ in unique_times:
+            headers.extend(export_cols)
+            headers.append("") # Empty column
+        
+        final_values = [headers]
+        
+        # 2. Data Rows
+        # We iterate row by row (0 to max_rows)
+        for r in range(max_rows):
+            row_data = []
+            for i in range(len(unique_times)):
+                df = slot_data_map[i]
+                if r < len(df):
+                    # Get row as list (excluding the helper col)
+                    # export_cols has 7 columns
+                    data_list = df.iloc[r][export_cols].tolist()
+                    row_data.extend(data_list)
+                else:
+                    # Pad with empty strings if this block is shorter
+                    row_data.extend([""] * len(export_cols))
                 
-                color = get_row_color(row, purple_groups, is_last_list[i])
+                # Add the empty separator column
+                row_data.append("")
+            final_values.append(row_data)
+
+        # 3. Upload Data (One Big Update)
+        ws.update(range_name="A1", values=final_values)
+        
+        # 4. Batch Formatting
+        requests = []
+        
+        # We need to recalculate indices based on the blocks
+        current_col_start = 0
+        
+        for i in range(len(unique_times)):
+            df = slot_data_map[i]
+            records = df.to_dict('records')
+            
+            for row_idx, row_data in enumerate(records):
+                # row_idx + 1 because of header row in sheet
+                # +1 because GSpread is 1-indexed? No, gridRange is 0-indexed relative to sheet, 
+                # but startRowIndex=1 means skipping the first row (header).
+                
+                sheet_row_index = row_idx + 1
+                
+                color = get_row_color(row_data, purple_groups, row_data['is_last_in_group'])
                 
                 if color:
                     requests.append({
                         "repeatCell": {
                             "range": {
                                 "sheetId": ws.id,
-                                "startRowIndex": sheet_row,      # Row index (0-based)
-                                "endRowIndex": sheet_row + 1,
-                                "startColumnIndex": current_col_idx - 1, # Col index (0-based)
-                                "endColumnIndex": current_col_idx - 1 + len(export_cols)
+                                "startRowIndex": sheet_row_index,
+                                "endRowIndex": sheet_row_index + 1,
+                                "startColumnIndex": current_col_start,
+                                "endColumnIndex": current_col_start + len(export_cols)
                             },
                             "cell": {
                                 "userEnteredFormat": {
@@ -320,10 +362,9 @@ def update_google_sheet_advanced(full_df):
                         }
                     })
             
-            # Move Column Pointer: 7 columns of data + 1 empty column gap
-            current_col_idx += (len(export_cols) + 1)
+            # Shift column start: 7 cols + 1 empty
+            current_col_start += (len(export_cols) + 1)
 
-        # Batch Execute Formatting
         if requests:
             ss.batch_update({"requests": requests})
             

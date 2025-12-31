@@ -8,8 +8,8 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-# VERSION UPDATE: 3.6
-st.set_page_config(page_title="Ninja Park Processor 3.6", layout="wide")
+# VERSION UPDATE: 3.7
+st.set_page_config(page_title="Ninja Park Processor 3.7", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -165,94 +165,65 @@ def parse_student_list(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"])
     return df
 
-# --- ADVANCED FORMATTING LOGIC ---
+# --- FORMATTING & STRUCTURE ---
 
 def apply_highlight_rules(df_records):
-    """
-    Applies complex highlighting rules that may require knowledge of neighbors.
-    Returns a list of formatting dictionaries (or None) matching the dataframe index.
-    """
-    
-    # Initialize output list
     formats = [None] * len(df_records)
     
-    # 1. APPLY BASE RULES (Red, Orange, Yellow)
+    # 1. BASE RULES
     for i, row in enumerate(df_records):
-        # Skip blanks (spacer rows)
-        if not row.get("Student Name"): continue
+        student_name = row.get("Student Name", "")
+        # IGNORE "open" rows and blank rows
+        if not student_name or student_name == "open": continue
         
-        # Exception: Ignore Comment
-        if "ignore" in str(row.get("RS Comment", "")).lower():
-            continue
+        if "ignore" in str(row.get("RS Comment", "")).lower(): continue
             
         skill = parse_skill_number(row.get("Level", "0"))
         group = parse_group_number(row.get("Keyword", "99"))
         class_name = str(row.get("Class Name", "")).lower()
         is_advanced = "advanced" in class_name
         
-        # RULE: RED TEXT (Bold + Red Text)
-        # Class not Advanced AND Skill >= 3
+        # RED TEXT (Bold + Red Text)
         if not is_advanced and skill >= 3:
-            formats[i] = {
-                # No background color specified
-                "text_color": {"red": 1.0, "green": 0.0, "blue": 0.0}, # Pure Red
-                "bold": True
-            }
+            formats[i] = {"text_color": {"red": 1.0, "green": 0.0, "blue": 0.0}, "bold": True}
             continue
 
-        # RULE: RED BACKGROUND (Light Red) - Changed from Orange
-        # If group is blank (99)
+        # LIGHT RED BG (Blank Group)
         if group == 99:
-            formats[i] = {
-                "bg": {"red": 1.0, "green": 0.8, "blue": 0.8}, # Light Red
-                "bold": False
-            }
+            formats[i] = {"bg": {"red": 1.0, "green": 0.8, "blue": 0.8}, "bold": False}
             continue
 
-        # RULE: YELLOW (Light Yellow Background)
+        # YELLOW BG
         is_yellow = False
-        
         if is_advanced:
-            # Advanced Rules
             if group == 1 and skill >= 5: is_yellow = True
             elif group == 2 and skill >= 7: is_yellow = True
             elif group == 3 and skill == 3: is_yellow = True
         else:
-            # Standard Rules
             if group == 1 and skill >= 2: is_yellow = True
             elif group == 2 and skill == 0: is_yellow = True
             elif group == 3 and skill <= 1: is_yellow = True
             
         if is_yellow:
-            formats[i] = {
-                "bg": {"red": 1.0, "green": 0.95, "blue": 0.8}, # Light Yellow
-                "bold": False
-            }
+            formats[i] = {"bg": {"red": 1.0, "green": 0.95, "blue": 0.8}, "bold": False}
             continue
 
-    # 2. APPLY GREEN RULE (Move Up Logic)
-    # Highlight last student in Group 1 and Group 2.
-    # If already highlighted, move up.
-    
+    # 2. GREEN RULE (Move Up)
     def apply_green_recursive(indices):
         if not indices: return
-        # Iterate backwards from the last person in the group
         for idx in reversed(indices):
             row_comment = str(df_records[idx].get("RS Comment", "")).lower()
-            if "ignore" in row_comment:
-                continue
+            if "ignore" in row_comment: continue
+            
+            # Skip "open" rows for green highlighting logic
+            if df_records[idx].get("Student Name") == "open": continue
 
-            # If no format exists, apply Green and STOP
             if formats[idx] is None:
-                formats[idx] = {
-                    "bg": {"red": 0.85, "green": 0.92, "blue": 0.83}, # Light Green
-                    "bold": False
-                }
-                break # Done for this group
-            # If format exists (Red/Yellow), loop continues to next person up.
+                formats[idx] = {"bg": {"red": 0.85, "green": 0.92, "blue": 0.83}, "bold": False}
+                break 
 
-    group_1_indices = [i for i, r in enumerate(df_records) if parse_group_number(r.get("Keyword", "")) == 1 and r.get("Student Name")]
-    group_2_indices = [i for i, r in enumerate(df_records) if parse_group_number(r.get("Keyword", "")) == 2 and r.get("Student Name")]
+    group_1_indices = [i for i, r in enumerate(df_records) if parse_group_number(r.get("Keyword", "")) == 1]
+    group_2_indices = [i for i, r in enumerate(df_records) if parse_group_number(r.get("Keyword", "")) == 2]
 
     apply_green_recursive(group_1_indices)
     apply_green_recursive(group_2_indices)
@@ -275,7 +246,6 @@ def update_google_sheet_advanced(full_df):
         st.error(f"Could not open sheet: {e}")
         return None
 
-    # RENAME COLUMNS
     full_df = full_df.rename(columns={
         "Attendance": "Attend#",
         "Student Keyword": "Keyword",
@@ -284,7 +254,8 @@ def update_google_sheet_advanced(full_df):
     })
 
     days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Lost"]
-    
+    export_cols = ["Student Name", "Age", "Attend#", "Keyword", "Level", "Class Name", "RS Comment"]
+
     try:
         sheet1 = ss.worksheet("Sheet1")
         ss.del_worksheet(sheet1)
@@ -298,67 +269,110 @@ def update_google_sheet_advanced(full_df):
             
         if day_df.empty: continue
 
-        # Delete and Recreate
         try:
             old_ws = ss.worksheet(day)
             ss.del_worksheet(old_ws)
         except: pass 
 
-        # --- CONSTRUCT GRID ---
         unique_times = sorted(day_df['Sort Time'].unique())
         slot_data_map = {}
-        max_rows = 0
-        export_cols = ["Student Name", "Age", "Attend#", "Keyword", "Level", "Class Name", "RS Comment"]
-        
-        # Store formatting rules
         slot_format_map = {}
-
+        slot_border_ranges = {} # Stores list of (start_row, end_row) tuples relative to slot start
+        max_rows = 0
+        
+        # --- BUILD STRUCTURE PER TIME SLOT ---
         for i, time_slot in enumerate(unique_times):
             time_df = day_df[day_df['Sort Time'] == time_slot].copy()
             
-            # Sort Logic
-            time_df['sort_group'] = time_df['Keyword'].apply(parse_group_number)
-            time_df['sort_skill'] = time_df['Level'].apply(parse_skill_number)
-            time_df['sort_att'] = time_df['Attend#'].apply(parse_attendance)
-            time_df['sort_age'] = time_df['Age'].apply(parse_age)
-            
-            time_df = time_df.sort_values(
-                by=['sort_group', 'sort_skill', 'sort_att', 'sort_age'],
-                ascending=[True, True, True, True]
-            )
-            
-            for c in export_cols:
-                if c not in time_df.columns: time_df[c] = ""
-            
-            # Insert Blank Rows Logic
-            records = time_df.to_dict('records')
+            # Helper to sort
+            def get_sorted_group(grp_num):
+                # Filter by group number logic
+                # 99 is blank/other
+                mask = time_df['Keyword'].apply(lambda x: parse_group_number(x) == grp_num)
+                grp_df = time_df[mask].copy()
+                
+                grp_df['sort_skill'] = grp_df['Level'].apply(parse_skill_number)
+                grp_df['sort_att'] = grp_df['Attend#'].apply(parse_attendance)
+                grp_df['sort_age'] = grp_df['Age'].apply(parse_age)
+                
+                return grp_df.sort_values(
+                    by=['sort_skill', 'sort_att', 'sort_age'],
+                    ascending=[True, True, True]
+                )
+
+            # 1. Get Sorted Groups
+            g1 = get_sorted_group(1)
+            g2 = get_sorted_group(2)
+            g3 = get_sorted_group(3)
+            # Catch leftovers (Group 99/Blank)
+            g_other = time_df[~time_df.index.isin(g1.index.union(g2.index).union(g3.index))].copy()
+
             final_records = []
+            border_ranges = []
             
-            if records:
-                prev_group = records[0]['sort_group']
-                final_records.append(records[0])
-                for rec in records[1:]:
-                    curr_group = rec['sort_group']
-                    if curr_group != prev_group:
-                        blank_row = {col: "" for col in export_cols}
-                        final_records.append(blank_row)
-                    final_records.append(rec)
-                    prev_group = curr_group
+            # Helper to Pad and Append
+            def add_group_block(df_group, label_num):
+                nonlocal final_records, border_ranges
+                
+                rows = df_group.to_dict('records')
+                count = len(rows)
+                
+                # Logic: Ensure at least 7 rows. 
+                # If < 7, add "open" rows AT THE TOP.
+                needed = max(0, 7 - count)
+                
+                # Get class name context from first row if exists, else generic
+                c_name = rows[0]['Class Name'] if rows else ""
+                
+                open_rows = []
+                for _ in range(needed):
+                    open_rows.append({
+                        "Student Name": "open",
+                        "Age": "", "Attend#": "", 
+                        "Keyword": f"Group {label_num}", 
+                        "Level": f"s0", # Default s0 for Open
+                        "Class Name": c_name, 
+                        "RS Comment": ""
+                    })
+                
+                # Combine: Open + Actual
+                block = open_rows + rows
+                
+                # Calculate Border Range
+                # Start index is current len(final_records) + 1 (because Sheet rows are 1-based and we have a header, but here we track relative 0-based index)
+                # Actually, simpler: track relative index in the list
+                start_idx = len(final_records) 
+                end_idx = start_idx + len(block) - 1
+                
+                border_ranges.append((start_idx, end_idx))
+                final_records.extend(block)
+                
+                # Add Spacer Row after group
+                spacer = {c: "" for c in export_cols}
+                final_records.append(spacer)
+
+            # Build the Stack
+            add_group_block(g1, 1)
+            add_group_block(g2, 2)
+            add_group_block(g3, 3)
             
-            # Calculate formats
+            # Add leftovers (no borders, just listed)
+            if not g_other.empty:
+                final_records.extend(g_other.to_dict('records'))
+
+            # Store Data
             formats_list = apply_highlight_rules(final_records)
             slot_format_map[i] = formats_list
-
+            slot_border_ranges[i] = border_ranges
+            
             final_block = pd.DataFrame(final_records)
-            if final_block.empty:
-                final_block = pd.DataFrame(columns=export_cols)
-            else:
-                final_block = final_block[export_cols]
+            if final_block.empty: final_block = pd.DataFrame(columns=export_cols)
+            else: final_block = final_block[export_cols]
 
             slot_data_map[i] = final_block
             if len(final_block) > max_rows: max_rows = len(final_block)
 
-        # Build Grid
+        # --- GRID CONSTRUCTION ---
         headers = []
         for _ in unique_times:
             headers.extend(export_cols)
@@ -377,41 +391,44 @@ def update_google_sheet_advanced(full_df):
                 row_data.append("")
             final_values.append(row_data)
 
-        # Create Sheet
         total_cols = max(len(unique_times) * 8, 26) 
         total_rows = len(final_values) + 20 
         ws = ss.add_worksheet(title=day, rows=total_rows, cols=total_cols)
-
-        # Upload
         ws.update(range_name="A1", values=final_values)
         
-        # Batch Formatting & Autofit
         requests = []
         
-        # 1. Colors, Bolding & Text Color
+        # 1. BOLD HEADERS (Row 1)
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": ws.id,
+                    "startRowIndex": 0, "endRowIndex": 1,
+                    "startColumnIndex": 0, "endColumnIndex": total_cols
+                },
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold"
+            }
+        })
+        
+        # 2. FORMATTING (Colors/Text) & BORDERS
         current_col_start = 0
         for i in range(len(unique_times)):
+            # A. Colors/Text
             formats = slot_format_map[i]
-            
             for row_idx, fmt in enumerate(formats):
                 if fmt:
-                    sheet_row_index = row_idx + 1 # +1 for header
-                    
-                    # Construct Cell Format
+                    sheet_row_index = row_idx + 1 
                     cell_format = {}
                     fields_list = []
                     
-                    # Background Color
                     if "bg" in fmt:
                         cell_format["backgroundColor"] = fmt["bg"]
                         fields_list.append("userEnteredFormat.backgroundColor")
                     
-                    # Text Formatting (Bold + Text Color)
                     text_fmt = {}
-                    if "bold" in fmt:
-                        text_fmt["bold"] = fmt["bold"]
-                    if "text_color" in fmt:
-                        text_fmt["foregroundColor"] = fmt["text_color"]
+                    if "bold" in fmt: text_fmt["bold"] = fmt["bold"]
+                    if "text_color" in fmt: text_fmt["foregroundColor"] = fmt["text_color"]
                     
                     if text_fmt:
                         cell_format["textFormat"] = text_fmt
@@ -422,26 +439,46 @@ def update_google_sheet_advanced(full_df):
                             "repeatCell": {
                                 "range": {
                                     "sheetId": ws.id,
-                                    "startRowIndex": sheet_row_index,
-                                    "endRowIndex": sheet_row_index + 1,
-                                    "startColumnIndex": current_col_start,
-                                    "endColumnIndex": current_col_start + len(export_cols)
+                                    "startRowIndex": sheet_row_index, "endRowIndex": sheet_row_index + 1,
+                                    "startColumnIndex": current_col_start, "endColumnIndex": current_col_start + len(export_cols)
                                 },
                                 "cell": {"userEnteredFormat": cell_format},
                                 "fields": ",".join(fields_list)
                             }
                         })
+            
+            # B. Borders
+            # Ranges are relative to the data block (0-based start, but data starts at Row 2 in Sheet)
+            ranges = slot_border_ranges[i]
+            for (start_r, end_r) in ranges:
+                # Convert to Sheet Coordinates
+                # Sheet Row 1 = Header. Data starts Row 2.
+                # So index 0 in data = Row 2 in sheet (Index 1)
+                sheet_start_row = start_r + 1 
+                sheet_end_row = end_r + 2 # End index is exclusive in API
+                
+                requests.append({
+                    "updateBorders": {
+                        "range": {
+                            "sheetId": ws.id,
+                            "startRowIndex": sheet_start_row,
+                            "endRowIndex": sheet_end_row,
+                            "startColumnIndex": current_col_start,
+                            "endColumnIndex": current_col_start + len(export_cols)
+                        },
+                        "top": {"style": "SOLID", "width": 1},
+                        "bottom": {"style": "SOLID", "width": 1},
+                        "left": {"style": "SOLID", "width": 1},
+                        "right": {"style": "SOLID", "width": 1}
+                    }
+                })
+
             current_col_start += (len(export_cols) + 1)
 
-        # 2. Auto-Fit Columns
+        # 3. Auto-Fit
         requests.append({
             "autoResizeDimensions": {
-                "dimensions": {
-                    "sheetId": ws.id,
-                    "dimension": "COLUMNS",
-                    "startIndex": 0,
-                    "endIndex": total_cols
-                }
+                "dimensions": {"sheetId": ws.id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": total_cols}
             }
         })
 
@@ -452,8 +489,8 @@ def update_google_sheet_advanced(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.6")
-st.write("Dashboard Layout with Advanced Highlighting Rules")
+st.title("🥷 Ninja Park Data Processor 3.7")
+st.write("Dashboard Layout: 7-Row Groups with Borders")
 
 col1, col2 = st.columns(2)
 with col1:

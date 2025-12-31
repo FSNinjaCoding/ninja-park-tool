@@ -8,7 +8,7 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-st.set_page_config(page_title="Ninja Park Processor 3.3", layout="wide")
+st.set_page_config(page_title="Ninja Park Processor 3.4", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -21,6 +21,9 @@ def clean_name(name):
 def abbreviate_class_name(name):
     """Shortens class names to save space."""
     if not isinstance(name, str): return name
+    # Remove date ranges if they slipped through (Safety Net)
+    name = re.sub(r'\d{1,2}/\d{1,2}/\d{4}.*', '', name).strip()
+    
     name = name.replace("Homeschool", "HS")
     name = name.replace("Flip Side Ninjas", "FS Ninjas")
     name = name.replace("(Ages ", "(")
@@ -29,7 +32,7 @@ def abbreviate_class_name(name):
 def parse_class_info(class_name):
     """
     Extracts Day and Time from Class Name.
-    Example: "Flip Side Ninjas... | Mon: 3:40 - 4:40" -> ("Mon", 1540)
+    Example: "FS Ninjas... | Mon: 3:40 - 4:40" -> ("Mon", 1540)
     """
     if not isinstance(class_name, str) or class_name == "Not Found":
         return "Lost", 9999, ""
@@ -80,8 +83,14 @@ def parse_roll_sheet(uploaded_file):
         st.warning("⚠️ Formatting warning: Could not find standard class headers. Check HTML file.")
 
     for header in headers:
-        # 1. Extract Class Name
-        class_name_raw = header.get_text(separator=" ", strip=True)
+        # 1. Extract Class Name (Fix: Specific span target)
+        # The first <span> typically contains the name, excluding the 2nd <td> with dates
+        name_span = header.find('span')
+        if name_span:
+            class_name_raw = name_span.get_text(strip=True)
+        else:
+            class_name_raw = header.get_text(separator=" ", strip=True)
+            
         current_class_name = class_name_raw if class_name_raw else "Unknown Class"
         
         # 2. Find the associated table
@@ -187,11 +196,11 @@ def get_row_color(row, purple_groups, is_last_in_group):
     if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
         return None
 
-    if "ignore" in str(row["RS Comment"]).lower(): # Updated column name
+    if "ignore" in str(row["RS Comment"]).lower():
         return None
 
-    skill_num = parse_skill_number(row["Level"]) # Updated column name
-    group_num = parse_group_number(row["Keyword"]) # Updated column name
+    skill_num = parse_skill_number(row["Level"])
+    group_num = parse_group_number(row["Keyword"])
     class_name_lower = str(row["Class Name"]).lower()
 
     # 1. RED
@@ -279,8 +288,6 @@ def update_google_sheet_advanced(full_df):
         unique_times = sorted(day_df['Sort Time'].unique())
         slot_data_map = {}
         max_rows = 0
-        
-        # New Abbreviated Column List
         export_cols = ["Student Name", "Age", "Attend#", "Keyword", "Level", "Class Name", "RS Comment"]
         
         for i, time_slot in enumerate(unique_times):
@@ -315,7 +322,7 @@ def update_google_sheet_advanced(full_df):
                     if curr_group != prev_group:
                         blank_row = {col: "" for col in export_cols}
                         blank_row['is_last_in_group'] = False
-                        blank_row['Class Name'] = "" # Safety for color logic
+                        blank_row['Class Name'] = "" 
                         blank_row['Keyword'] = ""
                         blank_row['Level'] = ""
                         final_records.append(blank_row)
@@ -404,7 +411,7 @@ def update_google_sheet_advanced(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.3")
+st.title("🥷 Ninja Park Data Processor 3.4")
 st.write("Dashboard Layout with Advanced Logic")
 
 col1, col2 = st.columns(2)

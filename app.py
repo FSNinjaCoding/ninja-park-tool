@@ -176,9 +176,8 @@ def parse_student_list(uploaded_file):
 
 def get_base_row_format(row, day):
     """
-    Determines the Base Highlight (Red, Orange, Yellow, Purple) 
-    based on the Day and Rules.
-    Returns a Dict representing the Format or None.
+    Determines the Base Highlight (Red, Orange, Yellow) based on Day/Rules.
+    Does NOT handle Green (calculated dynamically later).
     """
     if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
         return None
@@ -300,7 +299,6 @@ def update_google_sheet_advanced(full_df):
             
             if records:
                 prev_group = records[0]['sort_group']
-                # Add index tracker for original group logic
                 records[0]['_original_group_id'] = prev_group 
                 final_records.append(records[0])
                 
@@ -308,7 +306,7 @@ def update_google_sheet_advanced(full_df):
                     curr_group = rec['sort_group']
                     if curr_group != prev_group:
                         blank_row = {col: "" for col in export_cols}
-                        blank_row['_is_blank_separator'] = True # Marker
+                        blank_row['_is_blank_separator'] = True
                         final_records.append(blank_row)
                     
                     rec['_original_group_id'] = curr_group
@@ -351,7 +349,7 @@ def update_google_sheet_advanced(full_df):
         ws = ss.add_worksheet(title=day, rows=total_rows, cols=total_cols)
         ws.update(range_name="A1", values=final_values)
         
-        # --- BATCH FORMATTING (Floating Green Logic) ---
+        # --- BATCH FORMATTING ---
         requests = []
         COLOR_GREEN = {"red": 0.8, "green": 1.0, "blue": 0.8}
         
@@ -360,54 +358,44 @@ def update_google_sheet_advanced(full_df):
             df = slot_data_map[i]
             records = df.to_dict('records')
             
-            # 1. Calculate Base Formats for ALL rows in this block
+            # 1. Base Formats (Red, Orange, Yellow)
             row_formats = [None] * len(records)
-            
             for idx, row in enumerate(records):
-                if row.get('_is_blank_separator'):
-                    continue
+                if row.get('_is_blank_separator'): continue
                 row_formats[idx] = get_base_row_format(row, day)
 
-            # 2. Apply Floating Green Logic per Group
-            # We need to find the chunks of indices belonging to each group
-            group_indices = {} # group_id -> list of indices
-            
+            # 2. Floating Green (Group 1 & 2 ONLY)
+            group_indices = {} 
             for idx, row in enumerate(records):
-                if row.get('_is_blank_separator') or not row.get('_original_group_id'):
-                    continue
+                if row.get('_is_blank_separator') or not row.get('_original_group_id'): continue
                 g_id = row['_original_group_id']
                 if g_id not in group_indices: group_indices[g_id] = []
                 group_indices[g_id].append(idx)
             
-            # Iterate each group backwards
             for g_id, indices in group_indices.items():
-                indices.sort() # Ensure order
-                found_green_candidate = False
+                # RULE: Only apply green highlight to Group 1 (id=1) and Group 2 (id=2)
+                if g_id not in [1, 2]:
+                    continue
+
+                indices.sort()
                 
                 # Check from bottom up
                 for idx in reversed(indices):
                     if row_formats[idx] is None:
-                        # Found a slot with no highlight!
-                        # Apply Green here
+                        # Found valid spot
                         row_formats[idx] = {"backgroundColor": COLOR_GREEN}
-                        found_green_candidate = True
                         break
                     else:
-                        # This slot is already colored (Red/Orange/Yellow)
-                        # Continue moving up...
+                        # Spot taken, float up
                         pass
             
             # 3. Generate Requests
             for row_idx, fmt in enumerate(row_formats):
                 if fmt:
                     sheet_row_index = row_idx + 1
-                    
-                    # Construct CellFormat
                     user_fmt = {}
-                    if "backgroundColor" in fmt:
-                        user_fmt["backgroundColor"] = fmt["backgroundColor"]
-                    if "textFormat" in fmt:
-                        user_fmt["textFormat"] = fmt["textFormat"]
+                    if "backgroundColor" in fmt: user_fmt["backgroundColor"] = fmt["backgroundColor"]
+                    if "textFormat" in fmt: user_fmt["textFormat"] = fmt["textFormat"]
                     
                     requests.append({
                         "repeatCell": {

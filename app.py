@@ -139,7 +139,7 @@ def parse_student_list(uploaded_file):
             group_match = re.search(r'(group\s*[1-3])', keywords_raw)
             clean_keyword = group_match.group(0).capitalize() if group_match else ""
 
-            if raw_name:
+            if raw_name and raw_name.strip(): # Added .strip() check
                 data.append({
                     "Student Name": clean_name(raw_name),
                     "Age": age,
@@ -159,7 +159,12 @@ def get_row_color(row, purple_groups, is_last_in_group):
     Returns highlight color.
     Priority: Red > Green > Orange > Yellow > Purple
     """
-    # 0. IGNORE RULE: Check comment first
+    # 0. SAFETY CHECK: Do not highlight if Name is missing
+    # This prevents empty/phantom rows from turning Yellow
+    if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
+        return None
+
+    # 1. IGNORE RULE: Check comment first
     if "ignore" in str(row["Roll Sheet Comment"]).lower():
         return None
 
@@ -167,23 +172,23 @@ def get_row_color(row, purple_groups, is_last_in_group):
     group_num = parse_group_number(row["Student Keyword"])
     class_name_lower = row["Class Name"].lower()
 
-    # 1. RED (Class != Advanced AND Skill >= 3)
+    # 2. RED (Class != Advanced AND Skill >= 3)
     if "advanced" not in class_name_lower and skill_num >= 3:
         return {"red": 1.0, "green": 0.8, "blue": 0.8} # Light Red
 
-    # 2. GREEN (Last student in Group)
+    # 3. GREEN (Last student in Group)
     if is_last_in_group:
         return {"red": 0.8, "green": 1.0, "blue": 0.8} # Light Green
 
-    # 3. ORANGE (Group 1 AND Skill >= 2)
+    # 4. ORANGE (Group 1 AND Skill >= 2)
     if group_num == 1 and skill_num >= 2:
         return {"red": 1.0, "green": 0.9, "blue": 0.8} # Light Orange
 
-    # 4. YELLOW (Group Blank)
+    # 5. YELLOW (Group Blank)
     if row["Student Keyword"] == "":
         return {"red": 1.0, "green": 1.0, "blue": 0.8} # Light Yellow
 
-    # 5. PURPLE (Max Skill in Mixed Group)
+    # 6. PURPLE (Max Skill in Mixed Group)
     group_key = (row['Class Name'], row['Student Keyword'])
     if group_key in purple_groups:
         max_skill = purple_groups[group_key]
@@ -245,24 +250,12 @@ def update_google_sheet_advanced(full_df):
             ws = ss.add_worksheet(title=day, rows=100, cols=100)
 
         # --- 3. CONSTRUCT SIDE-BY-SIDE DATAFRAME IN PANDAS ---
-        # Instead of multiple updates, we build one big dataframe 'final_grid'
-        
         unique_times = sorted(day_df['Sort Time'].unique())
         
-        # We will collect data blocks and concat them axis=1
-        blocks = []
-        export_cols = ["Student Name", "Age", "Attendance", "Student Keyword", "Skill Level", "Class Name", "Roll Sheet Comment"]
-        
-        # Store metadata for coloring later (row_index, col_index -> row_data)
-        # However, since we concat, calculating exact row/col indices for coloring is tricky if blocks have diff lengths.
-        # So we will standardise length or just calculate offset.
-        
-        # Better approach for GSpread: 
-        # Calculate max rows needed. 
-        # We need to map: (Time Slot Index) -> (DataFrame for that slot)
-        
+        # Mapping: Time Slot Index -> DataFrame
         slot_data_map = {}
         max_rows = 0
+        export_cols = ["Student Name", "Age", "Attendance", "Student Keyword", "Skill Level", "Class Name", "Roll Sheet Comment"]
         
         for i, time_slot in enumerate(unique_times):
             # Filter & Sort
@@ -285,49 +278,39 @@ def update_google_sheet_advanced(full_df):
             for c in export_cols:
                 if c not in time_df.columns: time_df[c] = ""
             
-            final_block = time_df[export_cols + ['is_last_in_group']] # Keep highlight helper
+            final_block = time_df[export_cols + ['is_last_in_group']] # Keep helper
             
             slot_data_map[i] = final_block
             if len(final_block) > max_rows: max_rows = len(final_block)
 
-        # Now build the list of lists for GSpread
-        # Structure: Header Row, then Data Rows.
-        # We need to interleave: Block1, Empty, Block2, Empty...
-        
-        # 1. Headers
+        # Build Final Grid (List of Lists)
         headers = []
         for _ in unique_times:
             headers.extend(export_cols)
-            headers.append("") # Empty column
+            headers.append("") # Empty Gap
         
         final_values = [headers]
         
-        # 2. Data Rows
-        # We iterate row by row (0 to max_rows)
         for r in range(max_rows):
             row_data = []
             for i in range(len(unique_times)):
                 df = slot_data_map[i]
                 if r < len(df):
-                    # Get row as list (excluding the helper col)
-                    # export_cols has 7 columns
-                    data_list = df.iloc[r][export_cols].tolist()
-                    row_data.extend(data_list)
+                    # Add data
+                    row_data.extend(df.iloc[r][export_cols].tolist())
                 else:
-                    # Pad with empty strings if this block is shorter
+                    # Pad empty
                     row_data.extend([""] * len(export_cols))
                 
-                # Add the empty separator column
+                # Add gap
                 row_data.append("")
             final_values.append(row_data)
 
-        # 3. Upload Data (One Big Update)
+        # Upload Data
         ws.update(range_name="A1", values=final_values)
         
         # 4. Batch Formatting
         requests = []
-        
-        # We need to recalculate indices based on the blocks
         current_col_start = 0
         
         for i in range(len(unique_times)):
@@ -335,11 +318,7 @@ def update_google_sheet_advanced(full_df):
             records = df.to_dict('records')
             
             for row_idx, row_data in enumerate(records):
-                # row_idx + 1 because of header row in sheet
-                # +1 because GSpread is 1-indexed? No, gridRange is 0-indexed relative to sheet, 
-                # but startRowIndex=1 means skipping the first row (header).
-                
-                sheet_row_index = row_idx + 1
+                sheet_row_index = row_idx + 1 # +1 for header
                 
                 color = get_row_color(row_data, purple_groups, row_data['is_last_in_group'])
                 
@@ -362,7 +341,7 @@ def update_google_sheet_advanced(full_df):
                         }
                     })
             
-            # Shift column start: 7 cols + 1 empty
+            # Shift column start (Data Width + 1 Gap)
             current_col_start += (len(export_cols) + 1)
 
         if requests:

@@ -8,7 +8,8 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-st.set_page_config(page_title="Ninja Park Processor 3.4", layout="wide")
+# VERSION UPDATE: 3.5
+st.set_page_config(page_title="Ninja Park Processor 3.5", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -189,16 +190,17 @@ def apply_highlight_rules(df_records):
         class_name = str(row.get("Class Name", "")).lower()
         is_advanced = "advanced" in class_name
         
-        # RULE: RED (Light Red + Bold)
+        # RULE: RED (Bold + Red Text)
         # Class not Advanced AND Skill >= 3
         if not is_advanced and skill >= 3:
             formats[i] = {
-                "bg": {"red": 0.95, "green": 0.8, "blue": 0.8}, # Light Red
+                # No background color specified, defaults to white/none
+                "text_color": {"red": 1.0, "green": 0.0, "blue": 0.0}, # Pure Red
                 "bold": True
             }
             continue
 
-        # RULE: ORANGE (Light Orange)
+        # RULE: ORANGE (Light Orange Background)
         # If group is blank (99)
         if group == 99:
             formats[i] = {
@@ -207,15 +209,17 @@ def apply_highlight_rules(df_records):
             }
             continue
 
-        # RULE: YELLOW (Light Yellow)
+        # RULE: YELLOW (Light Yellow Background)
         is_yellow = False
         
         if is_advanced:
             # Advanced Rules
-            # G1 >= s5 OR G2 (s3 or >=s7) OR G3 <= s5
+            # G1 >= s5 
+            # G2 >= s7 (Changed from s3 or s7)
+            # G3 == s3 (Changed from s5 or lower)
             if group == 1 and skill >= 5: is_yellow = True
-            elif group == 2 and (skill == 3 or skill >= 7): is_yellow = True
-            elif group == 3 and skill <= 5: is_yellow = True
+            elif group == 2 and skill >= 7: is_yellow = True
+            elif group == 3 and skill == 3: is_yellow = True
         else:
             # Standard Rules
             # G1 >= s2 OR G2 == s0 OR G3 <= s1
@@ -234,18 +238,10 @@ def apply_highlight_rules(df_records):
     # Highlight last student in Group 1 and Group 2.
     # If already highlighted, move up.
     
-    # We need to find the indices belonging to Group 1 and Group 2
-    # Since the list is sorted by Group, they will be contiguous.
-    
     def apply_green_recursive(indices):
         if not indices: return
         # Iterate backwards from the last person in the group
         for idx in reversed(indices):
-            # If "ignore" prevents highlighting, we treat it as "occupied"? 
-            # Requirements say "Do not highlight", but usually this implies skipping.
-            # However, for the "Move Up" logic, we typically look for a free spot.
-            # Assuming "ignore" means "don't touch this row", we skip it and look above.
-            
             row_comment = str(df_records[idx].get("RS Comment", "")).lower()
             if "ignore" in row_comment:
                 continue
@@ -318,7 +314,7 @@ def update_google_sheet_advanced(full_df):
         max_rows = 0
         export_cols = ["Student Name", "Age", "Attend#", "Keyword", "Level", "Class Name", "RS Comment"]
         
-        # We also need to store the formatting rules for each slot
+        # Store formatting rules
         slot_format_map = {}
 
         for i, time_slot in enumerate(unique_times):
@@ -349,14 +345,11 @@ def update_google_sheet_advanced(full_df):
                     curr_group = rec['sort_group']
                     if curr_group != prev_group:
                         blank_row = {col: "" for col in export_cols}
-                        # We must preserve Class Name for header context if needed, but usually blank is fine
                         final_records.append(blank_row)
                     final_records.append(rec)
                     prev_group = curr_group
             
-            # CALCULATE FORMATS BEFORE DF CONVERSION
-            # We calculate formats based on final_records (which includes blank rows)
-            # Blanks will be skipped inside the function
+            # Calculate formats
             formats_list = apply_highlight_rules(final_records)
             slot_format_map[i] = formats_list
 
@@ -399,7 +392,7 @@ def update_google_sheet_advanced(full_df):
         # Batch Formatting & Autofit
         requests = []
         
-        # 1. Colors & Bolding
+        # 1. Colors, Bolding & Text Color
         current_col_start = 0
         for i in range(len(unique_times)):
             formats = slot_format_map[i]
@@ -410,29 +403,38 @@ def update_google_sheet_advanced(full_df):
                     
                     # Construct Cell Format
                     cell_format = {}
-                    fields = ""
+                    fields_list = []
                     
+                    # Background Color
                     if "bg" in fmt:
                         cell_format["backgroundColor"] = fmt["bg"]
-                        fields += "userEnteredFormat.backgroundColor,"
+                        fields_list.append("userEnteredFormat.backgroundColor")
                     
+                    # Text Formatting (Bold + Text Color)
+                    text_fmt = {}
                     if "bold" in fmt:
-                        cell_format["textFormat"] = {"bold": fmt["bold"]}
-                        fields += "userEnteredFormat.textFormat"
+                        text_fmt["bold"] = fmt["bold"]
+                    if "text_color" in fmt:
+                        text_fmt["foregroundColor"] = fmt["text_color"]
                     
-                    requests.append({
-                        "repeatCell": {
-                            "range": {
-                                "sheetId": ws.id,
-                                "startRowIndex": sheet_row_index,
-                                "endRowIndex": sheet_row_index + 1,
-                                "startColumnIndex": current_col_start,
-                                "endColumnIndex": current_col_start + len(export_cols)
-                            },
-                            "cell": {"userEnteredFormat": cell_format},
-                            "fields": fields.strip(",")
-                        }
-                    })
+                    if text_fmt:
+                        cell_format["textFormat"] = text_fmt
+                        fields_list.append("userEnteredFormat.textFormat")
+
+                    if fields_list:
+                        requests.append({
+                            "repeatCell": {
+                                "range": {
+                                    "sheetId": ws.id,
+                                    "startRowIndex": sheet_row_index,
+                                    "endRowIndex": sheet_row_index + 1,
+                                    "startColumnIndex": current_col_start,
+                                    "endColumnIndex": current_col_start + len(export_cols)
+                                },
+                                "cell": {"userEnteredFormat": cell_format},
+                                "fields": ",".join(fields_list)
+                            }
+                        })
             current_col_start += (len(export_cols) + 1)
 
         # 2. Auto-Fit Columns
@@ -454,7 +456,7 @@ def update_google_sheet_advanced(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.4")
+st.title("🥷 Ninja Park Data Processor 3.5")
 st.write("Dashboard Layout with Advanced Highlighting Rules")
 
 col1, col2 = st.columns(2)

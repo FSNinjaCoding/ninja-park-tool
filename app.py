@@ -59,7 +59,7 @@ def parse_age(age_str):
     match = re.search(r'(\d+)', str(age_str))
     return int(match.group(1)) if match else 99
 
-# --- PARSING LOGIC (Standard) ---
+# --- PARSING LOGIC (Strict Cleaning Added) ---
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
@@ -97,7 +97,8 @@ def parse_roll_sheet(uploaded_file):
                 skill_match = re.search(r's([0-9]|10)\b', details_text)
                 if skill_match: skill_level = skill_match.group(0)
                 
-                if raw_name:
+                # STRICT CHECK: Name must contain characters
+                if raw_name and raw_name.strip():
                     data.append({
                         "Student Name": clean_name(raw_name),
                         "Skill Level": skill_level,
@@ -139,6 +140,7 @@ def parse_student_list(uploaded_file):
             group_match = re.search(r'(group\s*[1-3])', keywords_raw)
             clean_keyword = group_match.group(0).capitalize() if group_match else ""
 
+            # STRICT CHECK: Name must contain characters
             if raw_name and raw_name.strip():
                 data.append({
                     "Student Name": clean_name(raw_name),
@@ -225,14 +227,12 @@ def update_google_sheet_advanced(full_df):
     # --- 2. PROCESS DAYS ---
     days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Lost"]
     
-    # Cleanup old sheets
+    # Cleanup "Sheet1" if it exists (default sheet)
     try:
-        worksheets = ss.worksheets()
-        if len(worksheets) > 1:
-            for ws in worksheets[1:]: ss.del_worksheet(ws)
+        sheet1 = ss.worksheet("Sheet1")
+        ss.del_worksheet(sheet1)
     except: pass
 
-    first_tab = True
     for day in days_order:
         if day == "Lost":
             day_df = full_df[full_df["Sort Day"] == "Lost"].copy()
@@ -241,17 +241,16 @@ def update_google_sheet_advanced(full_df):
             
         if day_df.empty: continue
 
-        # Get Worksheet
+        # --- NUCLEAR OPTION: DELETE AND RECREATE TAB ---
+        # This ensures 100% clean slate: no ghost rows, no residual colors.
         try:
-            ws = ss.worksheet(day)
-            ws.clear()
-        except:
-            ws = ss.add_worksheet(title=day, rows=100, cols=100)
+            old_ws = ss.worksheet(day)
+            ss.del_worksheet(old_ws)
+        except: 
+            pass # Sheet didn't exist, that's fine
 
         # --- 3. CONSTRUCT SIDE-BY-SIDE DATAFRAME IN PANDAS ---
         unique_times = sorted(day_df['Sort Time'].unique())
-        
-        # Mapping: Time Slot Index -> DataFrame
         slot_data_map = {}
         max_rows = 0
         export_cols = ["Student Name", "Age", "Attendance", "Student Keyword", "Skill Level", "Class Name", "Roll Sheet Comment"]
@@ -305,20 +304,17 @@ def update_google_sheet_advanced(full_df):
                 row_data.append("")
             final_values.append(row_data)
 
+        # CREATE FRESH SHEET
+        # Calculate needed cols: (7 data + 1 gap) * number of slots
+        total_cols = len(unique_times) * 8
+        total_rows = len(final_values) + 20 # Buffer
+        ws = ss.add_worksheet(title=day, rows=total_rows, cols=total_cols)
+
         # Upload Data
         ws.update(range_name="A1", values=final_values)
         
         # 4. Batch Formatting
-        
-        # KEY FIX: Explicitly clear all formats on the sheet first
-        requests = [{
-            "repeatCell": {
-                "range": {"sheetId": ws.id},
-                "cell": {"userEnteredFormat": {}},
-                "fields": "userEnteredFormat"
-            }
-        }]
-        
+        requests = []
         current_col_start = 0
         
         for i in range(len(unique_times)):
@@ -354,14 +350,6 @@ def update_google_sheet_advanced(full_df):
 
         if requests:
             ss.batch_update({"requests": requests})
-            
-        # Cleanup "Sheet1"
-        if first_tab and len(ss.worksheets()) > 1:
-            try:
-                sheet1 = ss.worksheet("Sheet1")
-                ss.del_worksheet(sheet1)
-            except: pass
-        first_tab = False
 
     return f"https://docs.google.com/spreadsheets/d/{ss.id}"
 
@@ -390,6 +378,9 @@ if roll_file and list_file:
             if df_list.empty: st.warning("⚠️ No data in Student List.")
 
             merged_df = pd.merge(df_list, df_roll, on="Student Name", how="left")
+            
+            # FILTER: Remove any rows with empty names immediately
+            merged_df = merged_df[merged_df["Student Name"].str.strip().astype(bool)]
             
             merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
             merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")

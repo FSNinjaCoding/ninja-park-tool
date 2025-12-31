@@ -15,7 +15,9 @@ st.set_page_config(page_title="Ninja Park Processor 3.1", layout="wide")
 def clean_name(name):
     """Standardizes names (Title Case, no extra spaces)."""
     if not isinstance(name, str): return ""
-    return re.sub(r'\s+', ' ', name).strip().title()
+    # Remove non-breaking spaces and extra whitespace
+    clean = re.sub(r'\s+', ' ', name).replace(u'\xa0', ' ').strip()
+    return clean.title()
 
 def parse_class_info(class_name):
     """
@@ -59,67 +61,46 @@ def parse_age(age_str):
     match = re.search(r'(\d+)', str(age_str))
     return int(match.group(1)) if match else 99
 
-# --- PARSING LOGIC (Container-Based) ---
+# --- PARSING LOGIC (Robust Header-Table Matching) ---
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
     
-    # The HTML structure groups each class in a div with a page-break style.
-    # We will iterate through these "Class Containers".
+    # Find all class headers
+    headers = soup.find_all('div', class_='full-width-header')
     
-    # Strategy: Find all divs that likely wrap a class. 
-    # Usually: <div style="page-break-after: always;"> ... </div>
-    class_containers = soup.find_all('div', style=lambda s: s and 'page-break-after' in s)
-    
-    if not class_containers:
-        # Fallback: Maybe the file doesn't use page breaks? Try matching tables directly.
-        # But based on provided files, page-breaks are the key.
-        st.warning("⚠️ Note: Standard page breaks not found. Attempting fallback parse.")
-        # Fallback to finding all 'full-width-header' divs
-        class_containers = soup.find_all('div', class_='full-width-header')
+    if not headers:
+        st.warning("⚠️ Formatting warning: Could not find standard class headers. Check HTML file.")
 
-    for container in class_containers:
-        # 1. Find Class Name
-        # Ideally looks for <div class="full-width-header"> -> <span>
-        header_div = container.find('div', class_='full-width-header')
-        if not header_div:
-            # If the container IS the header (fallback case)
-            if 'full-width-header' in container.get('class', []):
-                header_div = container
-            else:
-                continue # Skip if no header found
-                
-        # Extract text from the header
-        # Usually inside a span or just text content
-        class_name_raw = header_div.get_text(strip=True)
-        # Clean up: the text often lumps date/time together. 
-        # We just need it to capture "Advanced" or "Flip Side".
-        
+    for header in headers:
+        # 1. Extract Class Name
+        class_name_raw = header.get_text(separator=" ", strip=True)
         current_class_name = class_name_raw if class_name_raw else "Unknown Class"
-
-        # 2. Find Student Table within this container (or next sibling)
-        # If container is page-break wrapper, table is inside.
-        # If container is just header, table is next.
         
-        student_table = container.find('table', class_='table-roll-sheet')
+        # 2. Find the associated table
+        # We look for the next table class="table-roll-sheet" that appears after this header
+        table = header.find_next('table', class_='table-roll-sheet')
         
-        # If not inside, search siblings (fallback)
-        if not student_table:
-            # Look forward in the document for the next table
-            search = container.find_next('table', class_='table-roll-sheet')
-            if search:
-                student_table = search
+        # Safety: Ensure this table actually belongs to this header (not far away)
+        # If we found a table, but there is ANOTHER header between current header and table, skip
+        next_header = header.find_next('div', class_='full-width-header')
+        
+        # If a new header appears BEFORE the table we found, then the current header has no table
+        if table and next_header:
+            # Check parsing order in source
+            if next_header.sourceline < table.sourceline:
+                continue 
 
-        if not student_table:
-            continue # No students for this header?
+        if not table:
+            continue
 
-        # 3. Parse Students
-        rows = student_table.find_all('tr')
+        # 3. Parse Rows
+        rows = table.find_all('tr')
         if not rows: continue
         
-        # Identify columns
+        # Determine Column Indices dynamically
         first_row_cols = [c.get_text(strip=True) for c in rows[0].find_all(['td', 'th'])]
-        name_idx, detail_idx = 1, 3
+        name_idx, detail_idx = 1, 3 # defaults
         
         for idx, col_text in enumerate(first_row_cols):
             if "Student" in col_text: name_idx = idx
@@ -137,11 +118,12 @@ def parse_roll_sheet(uploaded_file):
             skill_match = re.search(r's([0-9]|10)\b', details_text)
             if skill_match: skill_level = skill_match.group(0)
             
-            if raw_name and raw_name.strip():
+            # Filter out non-student rows (often headers repeat or footers)
+            if raw_name and len(raw_name) > 1 and "Student" not in raw_name:
                 data.append({
                     "Student Name": clean_name(raw_name),
                     "Skill Level": skill_level,
-                    "Class Name": current_class_name # Tied securely to this loop
+                    "Class Name": current_class_name
                 })
 
     df = pd.DataFrame(data)
@@ -179,7 +161,7 @@ def parse_student_list(uploaded_file):
             group_match = re.search(r'(group\s*[1-3])', keywords_raw)
             clean_keyword = group_match.group(0).capitalize() if group_match else ""
 
-            if raw_name and raw_name.strip():
+            if raw_name and len(raw_name) > 1:
                 data.append({
                     "Student Name": clean_name(raw_name),
                     "Age": age,
@@ -192,18 +174,18 @@ def parse_student_list(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"])
     return df
 
-# --- COLOR LOGIC (Verified Priorities) ---
+# --- COLOR LOGIC (Priorities Updated) ---
 
 def get_row_color(row, purple_groups, is_last_in_group):
     """
     Returns highlight color.
     Priority: Red > Green > Orange > Yellow > Purple
     """
-    # 0. SAFETY CHECK: Do not highlight if Name is missing
+    # 0. SAFETY CHECK: Name must be present
     if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
         return None
 
-    # 1. IGNORE RULE: Check comment first
+    # 1. IGNORE RULE
     if "ignore" in str(row["Roll Sheet Comment"]).lower():
         return None
 
@@ -220,7 +202,7 @@ def get_row_color(row, purple_groups, is_last_in_group):
         return {"red": 0.8, "green": 1.0, "blue": 0.8} # Light Green
 
     # 4. ORANGE (Group 1 AND Skill >= 2 AND Class != Advanced)
-    # Corrected Logic: Now strictly ensures class is NOT advanced.
+    # Corrected logic to ensure advanced classes don't get this
     if group_num == 1 and skill_num >= 2 and "advanced" not in class_name_lower:
         return {"red": 1.0, "green": 0.9, "blue": 0.8} # Light Orange
 
@@ -266,7 +248,7 @@ def update_google_sheet_advanced(full_df):
     # --- 2. PROCESS DAYS ---
     days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Lost"]
     
-    # Cleanup "Sheet1"
+    # Try deleting Sheet1 if exists
     try:
         sheet1 = ss.worksheet("Sheet1")
         ss.del_worksheet(sheet1)
@@ -287,7 +269,7 @@ def update_google_sheet_advanced(full_df):
         except: 
             pass 
 
-        # --- 3. CONSTRUCT SIDE-BY-SIDE DATAFRAME IN PANDAS ---
+        # --- 3. CONSTRUCT GRID ---
         unique_times = sorted(day_df['Sort Time'].unique())
         slot_data_map = {}
         max_rows = 0
@@ -301,6 +283,7 @@ def update_google_sheet_advanced(full_df):
             time_df['sort_att'] = time_df['Attendance'].apply(parse_attendance)
             time_df['sort_age'] = time_df['Age'].apply(parse_age)
             
+            # SORT FIX: Corrected list lengths
             time_df = time_df.sort_values(
                 by=['sort_group', 'sort_skill', 'sort_att', 'sort_age'],
                 ascending=[True, True, True, True]
@@ -314,7 +297,7 @@ def update_google_sheet_advanced(full_df):
             for c in export_cols:
                 if c not in time_df.columns: time_df[c] = ""
             
-            final_block = time_df[export_cols + ['is_last_in_group']] # Keep helper
+            final_block = time_df[export_cols + ['is_last_in_group']]
             
             slot_data_map[i] = final_block
             if len(final_block) > max_rows: max_rows = len(final_block)

@@ -21,31 +21,24 @@ def clean_name(name):
 def abbreviate_class_name(name):
     """Shortens class names to save space."""
     if not isinstance(name, str): return name
-    # Remove date ranges if they slipped through
     name = re.sub(r'\d{1,2}/\d{1,2}/\d{4}.*', '', name).strip()
-    
     name = name.replace("Homeschool", "HS")
     name = name.replace("Flip Side Ninjas", "FS Ninjas")
     name = name.replace("(Ages ", "(")
     return name
 
 def parse_class_info(class_name):
-    """
-    Extracts Day and Time from Class Name.
-    """
     if not isinstance(class_name, str) or class_name == "Not Found":
         return "Lost", 9999, ""
     
-    # Extract Day
     day_match = re.search(r'\b(Mon|Tue|Wed|Thu|Fri)\b', class_name, re.IGNORECASE)
     day = day_match.group(1).title() if day_match else "Lost"
     
-    # Extract Start Time
     time_match = re.search(r'(\d{1,2}):(\d{2})', class_name)
     if time_match:
         hour = int(time_match.group(1))
         minute = int(time_match.group(2))
-        if hour < 8: hour += 12 # Assume PM unless morning
+        if hour < 8: hour += 12 
         sort_time = hour * 100 + minute
         time_str = f"{time_match.group(1)}:{time_match.group(2)}"
     else:
@@ -74,41 +67,27 @@ def parse_age(age_str):
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
-    
-    # Find all class headers
     headers = soup.find_all('div', class_='full-width-header')
     
     if not headers:
-        st.warning("⚠️ Formatting warning: Could not find standard class headers. Check HTML file.")
+        st.warning("⚠️ Formatting warning: Could not find standard class headers.")
 
     for header in headers:
-        # 1. Extract Class Name (Specific span target to exclude dates)
         name_span = header.find('span')
-        if name_span:
-            class_name_raw = name_span.get_text(strip=True)
-        else:
-            class_name_raw = header.get_text(separator=" ", strip=True)
-            
+        class_name_raw = name_span.get_text(strip=True) if name_span else header.get_text(separator=" ", strip=True)
         current_class_name = class_name_raw if class_name_raw else "Unknown Class"
         
-        # 2. Find the associated table
         table = header.find_next('table', class_='table-roll-sheet')
-        
-        # Safety: Ensure this table actually belongs to this header
         next_header = header.find_next('div', class_='full-width-header')
         
         if table and next_header:
             h_line = next_header.sourceline
             t_line = table.sourceline
-            
-            if h_line is not None and t_line is not None:
-                if h_line < t_line:
-                    continue 
+            if h_line is not None and t_line is not None and h_line < t_line:
+                continue 
 
-        if not table:
-            continue
+        if not table: continue
 
-        # 3. Parse Rows
         rows = table.find_all('tr')
         if not rows: continue
         
@@ -185,46 +164,108 @@ def parse_student_list(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"])
     return df
 
-# --- COLOR LOGIC ---
+# --- ADVANCED FORMATTING LOGIC ---
 
-def get_row_color(row, purple_groups, is_last_in_group):
+def apply_highlight_rules(df_records):
     """
-    Priority: Red > Orange > Green > Yellow > Purple
+    Applies complex highlighting rules that may require knowledge of neighbors.
+    Returns a list of formatting dictionaries (or None) matching the dataframe index.
     """
-    if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
-        return None
+    
+    # Initialize output list
+    formats = [None] * len(df_records)
+    
+    # 1. APPLY BASE RULES (Red, Orange, Yellow)
+    for i, row in enumerate(df_records):
+        # Skip blanks (spacer rows)
+        if not row.get("Student Name"): continue
+        
+        # Exception: Ignore Comment
+        if "ignore" in str(row.get("RS Comment", "")).lower():
+            continue
+            
+        skill = parse_skill_number(row.get("Level", "0"))
+        group = parse_group_number(row.get("Keyword", "99"))
+        class_name = str(row.get("Class Name", "")).lower()
+        is_advanced = "advanced" in class_name
+        
+        # RULE: RED (Light Red + Bold)
+        # Class not Advanced AND Skill >= 3
+        if not is_advanced and skill >= 3:
+            formats[i] = {
+                "bg": {"red": 0.95, "green": 0.8, "blue": 0.8}, # Light Red
+                "bold": True
+            }
+            continue
 
-    if "ignore" in str(row["RS Comment"]).lower():
-        return None
+        # RULE: ORANGE (Light Orange)
+        # If group is blank (99)
+        if group == 99:
+            formats[i] = {
+                "bg": {"red": 0.98, "green": 0.9, "blue": 0.8}, # Light Orange
+                "bold": False
+            }
+            continue
 
-    skill_num = parse_skill_number(row["Level"])
-    group_num = parse_group_number(row["Keyword"])
-    class_name_lower = str(row["Class Name"]).lower()
+        # RULE: YELLOW (Light Yellow)
+        is_yellow = False
+        
+        if is_advanced:
+            # Advanced Rules
+            # G1 >= s5 OR G2 (s3 or >=s7) OR G3 <= s5
+            if group == 1 and skill >= 5: is_yellow = True
+            elif group == 2 and (skill == 3 or skill >= 7): is_yellow = True
+            elif group == 3 and skill <= 5: is_yellow = True
+        else:
+            # Standard Rules
+            # G1 >= s2 OR G2 == s0 OR G3 <= s1
+            if group == 1 and skill >= 2: is_yellow = True
+            elif group == 2 and skill == 0: is_yellow = True
+            elif group == 3 and skill <= 1: is_yellow = True
+            
+        if is_yellow:
+            formats[i] = {
+                "bg": {"red": 1.0, "green": 0.95, "blue": 0.8}, # Light Yellow
+                "bold": False
+            }
+            continue
 
-    # 1. RED
-    if "advanced" not in class_name_lower and skill_num >= 3:
-        return {"red": 1.0, "green": 0.8, "blue": 0.8} 
+    # 2. APPLY GREEN RULE (Move Up Logic)
+    # Highlight last student in Group 1 and Group 2.
+    # If already highlighted, move up.
+    
+    # We need to find the indices belonging to Group 1 and Group 2
+    # Since the list is sorted by Group, they will be contiguous.
+    
+    def apply_green_recursive(indices):
+        if not indices: return
+        # Iterate backwards from the last person in the group
+        for idx in reversed(indices):
+            # If "ignore" prevents highlighting, we treat it as "occupied"? 
+            # Requirements say "Do not highlight", but usually this implies skipping.
+            # However, for the "Move Up" logic, we typically look for a free spot.
+            # Assuming "ignore" means "don't touch this row", we skip it and look above.
+            
+            row_comment = str(df_records[idx].get("RS Comment", "")).lower()
+            if "ignore" in row_comment:
+                continue
 
-    # 2. ORANGE
-    if group_num == 1 and skill_num >= 2 and "advanced" not in class_name_lower:
-        return {"red": 1.0, "green": 0.9, "blue": 0.8} 
+            # If no format exists, apply Green and STOP
+            if formats[idx] is None:
+                formats[idx] = {
+                    "bg": {"red": 0.85, "green": 0.92, "blue": 0.83}, # Light Green
+                    "bold": False
+                }
+                break # Done for this group
+            # If format exists (Red/Orange/Yellow), loop continues to next person up.
 
-    # 3. GREEN
-    if is_last_in_group:
-        return {"red": 0.8, "green": 1.0, "blue": 0.8} 
+    group_1_indices = [i for i, r in enumerate(df_records) if parse_group_number(r.get("Keyword", "")) == 1 and r.get("Student Name")]
+    group_2_indices = [i for i, r in enumerate(df_records) if parse_group_number(r.get("Keyword", "")) == 2 and r.get("Student Name")]
 
-    # 4. YELLOW
-    if row["Keyword"] == "":
-        return {"red": 1.0, "green": 1.0, "blue": 0.8} 
+    apply_green_recursive(group_1_indices)
+    apply_green_recursive(group_2_indices)
 
-    # 5. PURPLE
-    group_key = (row['Class Name'], row['Keyword'])
-    if group_key in purple_groups:
-        max_skill = purple_groups[group_key]
-        if skill_num == max_skill:
-            return {"red": 0.85, "green": 0.8, "blue": 1.0} 
-
-    return None
+    return formats
 
 def update_google_sheet_advanced(full_df):
     if "gcp_service_account" not in st.secrets:
@@ -242,7 +283,7 @@ def update_google_sheet_advanced(full_df):
         st.error(f"Could not open sheet: {e}")
         return None
 
-    # --- 1. RENAME COLUMNS ---
+    # RENAME COLUMNS
     full_df = full_df.rename(columns={
         "Attendance": "Attend#",
         "Student Keyword": "Keyword",
@@ -250,17 +291,6 @@ def update_google_sheet_advanced(full_df):
         "Roll Sheet Comment": "RS Comment"
     })
 
-    # --- 2. PRE-CALCULATE PURPLE GROUPS ---
-    purple_groups = {}
-    valid_data = full_df[full_df['Sort Day'] != 'Lost'].copy()
-    valid_data['skill_int'] = valid_data['Level'].apply(parse_skill_number)
-    
-    for (cls, grp), group_df in valid_data.groupby(['Class Name', 'Keyword']):
-        if not grp or "advanced" in cls.lower(): continue
-        if len(group_df['skill_int'].unique()) > 2:
-            purple_groups[(cls, grp)] = group_df['skill_int'].max()
-
-    # --- 3. PROCESS DAYS ---
     days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Lost"]
     
     try:
@@ -288,6 +318,9 @@ def update_google_sheet_advanced(full_df):
         max_rows = 0
         export_cols = ["Student Name", "Age", "Attend#", "Keyword", "Level", "Class Name", "RS Comment"]
         
+        # We also need to store the formatting rules for each slot
+        slot_format_map = {}
+
         for i, time_slot in enumerate(unique_times):
             time_df = day_df[day_df['Sort Time'] == time_slot].copy()
             
@@ -302,16 +335,13 @@ def update_google_sheet_advanced(full_df):
                 ascending=[True, True, True, True]
             )
             
-            # Highlight Logic Helpers
-            time_df['is_last_in_group'] = time_df['Keyword'] != time_df['Keyword'].shift(-1)
-            time_df.loc[time_df['Keyword'] == "", 'is_last_in_group'] = False
-            
             for c in export_cols:
                 if c not in time_df.columns: time_df[c] = ""
             
             # Insert Blank Rows Logic
             records = time_df.to_dict('records')
             final_records = []
+            
             if records:
                 prev_group = records[0]['sort_group']
                 final_records.append(records[0])
@@ -319,19 +349,22 @@ def update_google_sheet_advanced(full_df):
                     curr_group = rec['sort_group']
                     if curr_group != prev_group:
                         blank_row = {col: "" for col in export_cols}
-                        blank_row['is_last_in_group'] = False
-                        blank_row['Class Name'] = "" 
-                        blank_row['Keyword'] = ""
-                        blank_row['Level'] = ""
+                        # We must preserve Class Name for header context if needed, but usually blank is fine
                         final_records.append(blank_row)
                     final_records.append(rec)
                     prev_group = curr_group
             
+            # CALCULATE FORMATS BEFORE DF CONVERSION
+            # We calculate formats based on final_records (which includes blank rows)
+            # Blanks will be skipped inside the function
+            formats_list = apply_highlight_rules(final_records)
+            slot_format_map[i] = formats_list
+
             final_block = pd.DataFrame(final_records)
             if final_block.empty:
-                final_block = pd.DataFrame(columns=export_cols + ['is_last_in_group'])
+                final_block = pd.DataFrame(columns=export_cols)
             else:
-                final_block = final_block[export_cols + ['is_last_in_group']]
+                final_block = final_block[export_cols]
 
             slot_data_map[i] = final_block
             if len(final_block) > max_rows: max_rows = len(final_block)
@@ -366,15 +399,27 @@ def update_google_sheet_advanced(full_df):
         # Batch Formatting & Autofit
         requests = []
         
-        # 1. Colors
+        # 1. Colors & Bolding
         current_col_start = 0
         for i in range(len(unique_times)):
-            df = slot_data_map[i]
-            records = df.to_dict('records')
-            for row_idx, row_data in enumerate(records):
-                sheet_row_index = row_idx + 1
-                color = get_row_color(row_data, purple_groups, row_data.get('is_last_in_group', False))
-                if color:
+            formats = slot_format_map[i]
+            
+            for row_idx, fmt in enumerate(formats):
+                if fmt:
+                    sheet_row_index = row_idx + 1 # +1 for header
+                    
+                    # Construct Cell Format
+                    cell_format = {}
+                    fields = ""
+                    
+                    if "bg" in fmt:
+                        cell_format["backgroundColor"] = fmt["bg"]
+                        fields += "userEnteredFormat.backgroundColor,"
+                    
+                    if "bold" in fmt:
+                        cell_format["textFormat"] = {"bold": fmt["bold"]}
+                        fields += "userEnteredFormat.textFormat"
+                    
                     requests.append({
                         "repeatCell": {
                             "range": {
@@ -384,8 +429,8 @@ def update_google_sheet_advanced(full_df):
                                 "startColumnIndex": current_col_start,
                                 "endColumnIndex": current_col_start + len(export_cols)
                             },
-                            "cell": {"userEnteredFormat": {"backgroundColor": color}},
-                            "fields": "userEnteredFormat.backgroundColor"
+                            "cell": {"userEnteredFormat": cell_format},
+                            "fields": fields.strip(",")
                         }
                     })
             current_col_start += (len(export_cols) + 1)
@@ -410,7 +455,7 @@ def update_google_sheet_advanced(full_df):
 
 # --- MAIN UI ---
 st.title("🥷 Ninja Park Data Processor 3.4")
-st.write("Dashboard Layout with Advanced Logic")
+st.write("Dashboard Layout with Advanced Highlighting Rules")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -423,7 +468,7 @@ if roll_file and list_file:
     list_file.seek(0)
     
     st.divider()
-    with st.spinner('Building Dashboard... (This may take 10-20 seconds)...'):
+    with st.spinner('Building Dashboard...'):
         try:
             df_roll = parse_roll_sheet(roll_file.read())
             df_list = parse_student_list(list_file.read())
@@ -432,15 +477,11 @@ if roll_file and list_file:
             if df_list.empty: st.warning("⚠️ No data in Student List.")
 
             merged_df = pd.merge(df_list, df_roll, on="Student Name", how="left")
-            
-            # FILTER
             merged_df = merged_df[merged_df["Student Name"].str.strip().astype(bool)]
             
-            # FILL
             merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
             merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")
             
-            # ABBREVIATE NAMES
             merged_df["Class Name"] = merged_df["Class Name"].apply(abbreviate_class_name)
             
             merged_df[['Sort Day', 'Sort Time', 'Time Str']] = merged_df['Class Name'].apply(

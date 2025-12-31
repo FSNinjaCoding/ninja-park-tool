@@ -264,7 +264,7 @@ def update_google_sheet_advanced(full_df):
             time_df['sort_att'] = time_df['Attendance'].apply(parse_attendance)
             time_df['sort_age'] = time_df['Age'].apply(parse_age)
             
-            # FIXED SORTING CALL
+            # FIXED SORTING CALL - Removed extra 'True'
             time_df = time_df.sort_values(
                 by=['sort_group', 'sort_skill', 'sort_att', 'sort_age'],
                 ascending=[True, True, True, True]

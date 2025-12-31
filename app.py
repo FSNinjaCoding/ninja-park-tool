@@ -61,7 +61,7 @@ def parse_age(age_str):
     match = re.search(r'(\d+)', str(age_str))
     return int(match.group(1)) if match else 99
 
-# --- PARSING LOGIC (Robust Header-Table Matching) ---
+# --- PARSING LOGIC (Fixed Sourceline Crash) ---
 def parse_roll_sheet(uploaded_file):
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
@@ -78,18 +78,20 @@ def parse_roll_sheet(uploaded_file):
         current_class_name = class_name_raw if class_name_raw else "Unknown Class"
         
         # 2. Find the associated table
-        # We look for the next table class="table-roll-sheet" that appears after this header
         table = header.find_next('table', class_='table-roll-sheet')
         
-        # Safety: Ensure this table actually belongs to this header (not far away)
-        # If we found a table, but there is ANOTHER header between current header and table, skip
+        # Safety: Ensure this table actually belongs to this header
         next_header = header.find_next('div', class_='full-width-header')
         
-        # If a new header appears BEFORE the table we found, then the current header has no table
+        # FIXED: Safe line number comparison
         if table and next_header:
-            # Check parsing order in source
-            if next_header.sourceline < table.sourceline:
-                continue 
+            h_line = next_header.sourceline
+            t_line = table.sourceline
+            
+            # Only compare if both line numbers exist (are not None)
+            if h_line is not None and t_line is not None:
+                if h_line < t_line:
+                    continue # Table is further down than the next header -> belongs to next class
 
         if not table:
             continue
@@ -118,7 +120,7 @@ def parse_roll_sheet(uploaded_file):
             skill_match = re.search(r's([0-9]|10)\b', details_text)
             if skill_match: skill_level = skill_match.group(0)
             
-            # Filter out non-student rows (often headers repeat or footers)
+            # Filter out non-student rows
             if raw_name and len(raw_name) > 1 and "Student" not in raw_name:
                 data.append({
                     "Student Name": clean_name(raw_name),
@@ -174,7 +176,7 @@ def parse_student_list(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"])
     return df
 
-# --- COLOR LOGIC (Priorities Updated) ---
+# --- COLOR LOGIC (Standard) ---
 
 def get_row_color(row, purple_groups, is_last_in_group):
     """
@@ -202,7 +204,6 @@ def get_row_color(row, purple_groups, is_last_in_group):
         return {"red": 0.8, "green": 1.0, "blue": 0.8} # Light Green
 
     # 4. ORANGE (Group 1 AND Skill >= 2 AND Class != Advanced)
-    # Corrected logic to ensure advanced classes don't get this
     if group_num == 1 and skill_num >= 2 and "advanced" not in class_name_lower:
         return {"red": 1.0, "green": 0.9, "blue": 0.8} # Light Orange
 
@@ -283,7 +284,7 @@ def update_google_sheet_advanced(full_df):
             time_df['sort_att'] = time_df['Attendance'].apply(parse_attendance)
             time_df['sort_age'] = time_df['Age'].apply(parse_age)
             
-            # SORT FIX: Corrected list lengths
+            # Sort
             time_df = time_df.sort_values(
                 by=['sort_group', 'sort_skill', 'sort_att', 'sort_age'],
                 ascending=[True, True, True, True]

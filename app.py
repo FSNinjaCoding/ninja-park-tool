@@ -6,6 +6,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import re
 
 # --- CONFIGURATION ---
+# The exact name of the Google Sheet you created in your Drive
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
 st.set_page_config(page_title="Ninja Park Processor", layout="wide")
@@ -20,7 +21,6 @@ def parse_roll_sheet(uploaded_file):
     data = []
     
     # The Roll Sheet is made of hundreds of small tables.
-    # We iterate through them to track the "Current Class".
     tables = soup.find_all('table')
     
     current_class_name = "Unknown Class"
@@ -29,51 +29,50 @@ def parse_roll_sheet(uploaded_file):
         rows = table.find_all('tr')
         if not rows: continue
         
-        # Check the first row to identify the table type
+        # Check first row to identify table type
         first_row_cols = [c.get_text(strip=True) for c in rows[0].find_all(['td', 'th'])]
         
-        # CASE 1: Class Header Table (e.g., "Advanced Ninja... | Thu: 6:00")
+        # CASE 1: Class Header (e.g., "Advanced Ninja... | Thu: 6:00")
         if len(first_row_cols) > 0 and ("|" in first_row_cols[0] or "Ninja" in first_row_cols[0]):
             if "Student" not in first_row_cols[0]: 
                 current_class_name = first_row_cols[0]
                 continue
 
-        # CASE 2: Student Data Table (Header contains "Student")
+        # CASE 2: Student Data
         is_student_table = False
-        name_idx = 1 # Default based on your file
-        detail_idx = 3 # Default based on your file
+        name_idx = 1 # Default
+        detail_idx = 3 # Default
         
-        # Scan header to confirm it's a student table and find column indices
         for idx, col_text in enumerate(first_row_cols):
             if "Student" in col_text:
                 is_student_table = True
                 name_idx = idx
-                # Look for "Details" column
                 for sub_idx, sub_text in enumerate(first_row_cols):
                     if "Details" in sub_text:
                         detail_idx = sub_idx
                 break
         
         if is_student_table:
-            # Iterate through student rows (skipping the header)
             for row in rows[1:]:
                 cols = row.find_all(['td', 'th'])
-                if len(cols) > max(name_idx, detail_idx):
-                    raw_name = cols[name_idx].get_text(strip=True)
-                    details_text = cols[detail_idx].get_text(strip=True).lower()
-                    
-                    # Extract Skill Level (s1-s10)
-                    skill_level = "s0"
-                    skill_match = re.search(r's([0-9]|10)\b', details_text)
-                    if skill_match:
-                        skill_level = skill_match.group(0)
-                    
-                    if raw_name:
-                        data.append({
-                            "Student Name": clean_name(raw_name),
-                            "Skill Level": skill_level,
-                            "Class Name": current_class_name
-                        })
+                # Safe Extraction Helper
+                def get_val(i): return cols[i].get_text(strip=True) if i < len(cols) else ""
+                
+                raw_name = get_val(name_idx)
+                details_text = get_val(detail_idx).lower()
+                
+                # Extract Skill Level (s1-s10)
+                skill_level = "s0"
+                skill_match = re.search(r's([0-9]|10)\b', details_text)
+                if skill_match:
+                    skill_level = skill_match.group(0)
+                
+                if raw_name:
+                    data.append({
+                        "Student Name": clean_name(raw_name),
+                        "Skill Level": skill_level,
+                        "Class Name": current_class_name
+                    })
 
     df = pd.DataFrame(data)
     if not df.empty:
@@ -89,18 +88,17 @@ def parse_student_list(uploaded_file):
         rows = table.find_all('tr')
         if not rows: continue
         
-        # Detect Headers to find column indices
+        # Detect Headers
         headers = [c.get_text(strip=True).lower() for c in rows[0].find_all(['td', 'th'])]
         
-        # Defaults based on your file structure:
-        # ['', 'Student Name', 'Attendance...', 'Age', 'Student Keywords', 'Roll Sheet Comment']
+        # Defaults based on your file
         name_idx = 1
         att_idx = 2
         age_idx = 3
         key_idx = 4
         comm_idx = 5
         
-        # Dynamic search to be safe
+        # Dynamic Header Search
         for i, h in enumerate(headers):
             if "student name" in h: name_idx = i
             elif "age" in h: age_idx = i
@@ -108,29 +106,31 @@ def parse_student_list(uploaded_file):
             elif "attendance" in h: att_idx = i
             elif "comment" in h: comm_idx = i
 
-        # Parse Data Rows
+        # Parse Rows
         for row in rows[1:]:
             cols = row.find_all(['td', 'th'])
-            # Ensure we have enough columns to grab everything
-            if len(cols) > max(name_idx, age_idx, key_idx, att_idx, comm_idx):
-                raw_name = cols[name_idx].get_text(strip=True)
-                age = cols[age_idx].get_text(strip=True)
-                attendance = cols[att_idx].get_text(strip=True)
-                comment = cols[comm_idx].get_text(strip=True)
-                keywords_raw = cols[key_idx].get_text(strip=True).lower()
-                
-                # Filter Keywords: Group 1, 2, or 3
-                group_match = re.search(r'(group\s*[1-3])', keywords_raw)
-                clean_keyword = group_match.group(0).capitalize() if group_match else ""
+            
+            # SAFE EXTRACTION: This prevents skipping rows if the last column is empty
+            def get_val(i): return cols[i].get_text(strip=True) if i < len(cols) else ""
 
-                if raw_name:
-                    data.append({
-                        "Student Name": clean_name(raw_name),
-                        "Age": age,
-                        "Attendance": attendance,
-                        "Roll Sheet Comment": comment,
-                        "Student Keyword": clean_keyword
-                    })
+            raw_name = get_val(name_idx)
+            age = get_val(age_idx)
+            attendance = get_val(att_idx)
+            comment = get_val(comm_idx)
+            keywords_raw = get_val(key_idx).lower()
+            
+            # Filter Keywords
+            group_match = re.search(r'(group\s*[1-3])', keywords_raw)
+            clean_keyword = group_match.group(0).capitalize() if group_match else ""
+
+            if raw_name:
+                data.append({
+                    "Student Name": clean_name(raw_name),
+                    "Age": age,
+                    "Attendance": attendance,
+                    "Roll Sheet Comment": comment,
+                    "Student Keyword": clean_keyword
+                })
 
     df = pd.DataFrame(data)
     if not df.empty:
@@ -139,7 +139,7 @@ def parse_student_list(uploaded_file):
 
 def update_google_sheet(df):
     if "gcp_service_account" not in st.secrets:
-        st.error("Secrets not found! Please check your Streamlit settings.")
+        st.error("Secrets not found!")
         return None
 
     creds_dict = st.secrets["gcp_service_account"]
@@ -150,18 +150,15 @@ def update_google_sheet(df):
     try:
         # Open existing sheet
         sheet = client.open(GOOGLE_SHEET_NAME).sheet1
-        
-        # Clear and Update
         sheet.clear()
         sheet.update([df.columns.values.tolist()] + df.values.tolist())
         return f"https://docs.google.com/spreadsheets/d/{sheet.spreadsheet.id}"
-        
     except gspread.exceptions.SpreadsheetNotFound:
-        st.error(f"❌ Could not find the Google Sheet named '{GOOGLE_SHEET_NAME}'.")
-        st.info(f"Please create a blank sheet with that EXACT name in your Drive and share it with: {creds_dict['client_email']}")
+        st.error(f"❌ Could not find Google Sheet '{GOOGLE_SHEET_NAME}'.")
+        st.info(f"Please create it and share with: {creds_dict['client_email']}")
         return None
     except Exception as e:
-        st.error(f"Error updating sheet: {e}")
+        st.error(f"Error: {e}")
         return None
 
 # --- MAIN UI ---
@@ -185,23 +182,22 @@ if roll_file and list_file:
             df_roll = parse_roll_sheet(roll_file.read())
             df_list = parse_student_list(list_file.read())
 
-            if df_roll.empty: st.warning("⚠️ No data found in Roll Sheet.")
-            if df_list.empty: st.warning("⚠️ No data found in Student List.")
+            if df_roll.empty: st.warning("⚠️ No data in Roll Sheet.")
+            if df_list.empty: st.warning("⚠️ No data in Student List.")
 
-            # Merge (Left join keeps all students from the list)
+            # Merge
             merged_df = pd.merge(df_list, df_roll, on="Student Name", how="left")
             
-            # Fill blanks
+            # Fill Blanks
             merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
             merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")
             
-            # Define Final Columns including the new ones
+            # Final Column Selection
             final_cols = ["Student Name", "Age", "Attendance", "Roll Sheet Comment", "Student Keyword", "Skill Level", "Class Name"]
             
-            # Ensure columns exist (just in case)
-            for col in final_cols:
-                if col not in merged_df.columns:
-                    merged_df[col] = ""
+            # Ensure cols exist
+            for c in final_cols:
+                if c not in merged_df.columns: merged_df[c] = ""
             
             final_df = merged_df[final_cols]
             

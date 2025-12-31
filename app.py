@@ -4,7 +4,6 @@ from bs4 import BeautifulSoup
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import re
-import io
 
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
@@ -22,13 +21,13 @@ def clean_name(name):
     return re.sub(r'\s+', ' ', name).strip().title()
 
 def parse_roll_sheet(uploaded_file):
-    """Parses the Roll Sheet HTML."""
+    """Parses the Roll Sheet HTML from memory buffer."""
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
     
     tables = soup.find_all('table')
     for table in tables:
-        # Find Class Name (look for header before table)
+        # Find Class Name (preceding header)
         class_name = "Unknown Class"
         previous = table.find_previous(['h1', 'h2', 'h3', 'h4', 'div', 'span'], class_=True)
         if previous:
@@ -47,7 +46,7 @@ def parse_roll_sheet(uploaded_file):
 
                 # Extract Skill Level
                 skill_level = "s0"
-                skill_match = re.search(r's([0-9]|10)\b', details_text) # Matches s0-s10
+                skill_match = re.search(r's([0-9]|10)\b', details_text)
                 if skill_match:
                     skill_level = skill_match.group(0)
                 
@@ -58,15 +57,14 @@ def parse_roll_sheet(uploaded_file):
                         "Class Name": class_name
                     })
     
+    # Remove duplicates if a student appears multiple times in the same class list
     df = pd.DataFrame(data)
-    # If duplicates exist (student in multiple classes), keep the highest skill or combine
-    # For now, we drop duplicates to keep it simple
     if not df.empty:
         df = df.drop_duplicates(subset=["Student Name"], keep='first')
     return df
 
 def parse_student_list(uploaded_file):
-    """Parses the Student List HTML."""
+    """Parses the Student List HTML from memory buffer."""
     soup = BeautifulSoup(uploaded_file, 'lxml')
     data = []
     tables = soup.find_all('table')
@@ -75,11 +73,10 @@ def parse_student_list(uploaded_file):
         rows = table.find_all('tr')
         for row in rows:
             cols = row.find_all('td')
-            # Look for tables with roughly the right structure (Name, x, Age, Keywords)
             if len(cols) >= 4:
                 raw_name = cols[0].get_text(strip=True)
                 
-                # Skip headers
+                # Skip header rows
                 if raw_name.lower() == "student" or "keyword" in raw_name.lower(): 
                     continue
                 
@@ -104,8 +101,9 @@ def parse_student_list(uploaded_file):
 
 def update_google_sheet(df):
     """Connects to Google Sheets using Streamlit Secrets."""
+    # Check if secrets exist
     if "gcp_service_account" not in st.secrets:
-        st.error("Secrets not found! Please add your Google Credentials to Streamlit Secrets.")
+        st.error("Secrets not found! Please check your Streamlit settings.")
         return None
 
     creds_dict = st.secrets["gcp_service_account"]
@@ -119,7 +117,6 @@ def update_google_sheet(df):
         try:
             sh = client.create(GOOGLE_SHEET_NAME)
             sheet = sh.sheet1
-            # Share with the client email so they can actually see it
             sh.share(creds_dict['client_email'], perm_type='user', role='owner')
         except Exception as e:
             st.error(f"Could not create sheet: {e}")
@@ -147,24 +144,21 @@ if roll_file and list_file:
             df_roll = parse_roll_sheet(roll_file.read())
             df_list = parse_student_list(list_file.read())
             
-            # 2. Debug: Show user if parsing failed
+            # Check for empty data
             if df_roll.empty:
-                st.warning("⚠️ No students found in Roll Sheet. Check the file format.")
+                st.warning("⚠️ No students found in Roll Sheet. Please check the file.")
             if df_list.empty:
-                st.warning("⚠️ No students found in Student List. Check the file format.")
+                st.warning("⚠️ No students found in Student List. Please check the file.")
 
-            # 3. Merge Data
-            # 'left' merge keeps all students from the Student List, even if they aren't on the Roll Sheet
+            # 2. Merge Data
+            # 'left' merge keeps everyone from the Student List
             merged_df = pd.merge(df_list, df_roll, on="Student Name", how="left")
             
-            # Fill missing values (for students not in roll sheet)
+            # Fill missing values for students not found in roll sheet
             merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
             merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")
-
-            # 4. Filter & Reorder
-            # Only keeping students that have a Group Keyword if you want, or keep all:
-            # merged_df = merged_df[merged_df["Student Keyword"] != ""] 
             
+            # 3. Final Columns
             final_df = merged_df[["Student Name", "Age", "Student Keyword", "Skill Level", "Class Name"]]
             
             st.success(f"Matched {len(final_df)} students!")
@@ -172,22 +166,24 @@ if roll_file and list_file:
             
             col_a, col_b = st.columns(2)
             
+            # DOWNLOAD BUTTON
             with col_a:
-                csv = final_df.to_csv(index=False).encode('utf-8')
+                csv_data = final_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="Download CSV",
-                    data=csv,
+                    data=csv_data,
                     file_name='ninja_output.csv',
                     mime='text/csv',
                     use_container_width=True
                 )
             
+            # GOOGLE SHEET BUTTON
             with col_b:
                 if st.button("Update Master Google Sheet", use_container_width=True):
                     link = update_google_sheet(final_df)
                     if link:
                         st.success("Google Sheet Updated!")
-                        # IMPORTANT: target="_blank" prevents the app from resetting
+                        # This HTML link prevents the app from resetting
                         st.markdown(f'''
                             <a href="{link}" target="_blank" style="
                                 display: inline-block;

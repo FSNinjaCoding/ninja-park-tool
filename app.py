@@ -139,7 +139,7 @@ def parse_student_list(uploaded_file):
             group_match = re.search(r'(group\s*[1-3])', keywords_raw)
             clean_keyword = group_match.group(0).capitalize() if group_match else ""
 
-            if raw_name and raw_name.strip(): # Added .strip() check
+            if raw_name and raw_name.strip():
                 data.append({
                     "Student Name": clean_name(raw_name),
                     "Age": age,
@@ -160,7 +160,6 @@ def get_row_color(row, purple_groups, is_last_in_group):
     Priority: Red > Green > Orange > Yellow > Purple
     """
     # 0. SAFETY CHECK: Do not highlight if Name is missing
-    # This prevents empty/phantom rows from turning Yellow
     if not row.get("Student Name") or str(row["Student Name"]).strip() == "":
         return None
 
@@ -310,7 +309,16 @@ def update_google_sheet_advanced(full_df):
         ws.update(range_name="A1", values=final_values)
         
         # 4. Batch Formatting
-        requests = []
+        
+        # KEY FIX: Explicitly clear all formats on the sheet first
+        requests = [{
+            "repeatCell": {
+                "range": {"sheetId": ws.id},
+                "cell": {"userEnteredFormat": {}},
+                "fields": "userEnteredFormat"
+            }
+        }]
+        
         current_col_start = 0
         
         for i in range(len(unique_times)):

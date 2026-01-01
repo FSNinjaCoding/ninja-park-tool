@@ -8,8 +8,8 @@ import re
 # --- CONFIGURATION ---
 GOOGLE_SHEET_NAME = "Ninja_Student_Output"
 
-# VERSION UPDATE: 3.8
-st.set_page_config(page_title="Ninja Park Processor 3.8", layout="wide")
+# VERSION UPDATE: 3.9
+st.set_page_config(page_title="Ninja Park Processor 3.9", page_icon="🥷", layout="wide")
 
 # --- HELPER FUNCTIONS ---
 
@@ -64,14 +64,27 @@ def parse_age(age_str):
     match = re.search(r'(\d+)', str(age_str))
     return int(match.group(1)) if match else 99
 
+# --- FILE DETECTION ---
+def identify_file_type(html_content):
+    """
+    Returns 'roll', 'list', or None based on unique HTML markers.
+    """
+    if 'class="full-width-header"' in html_content or "full-width-header" in html_content:
+        return 'roll'
+    # Student list usually has 'Student Keyword' or specific table structures
+    if 'Student Keyword' in html_content or 'Attendance' in html_content and 'Student Name' in html_content:
+        return 'list'
+    return None
+
 # --- PARSING LOGIC ---
-def parse_roll_sheet(uploaded_file):
-    soup = BeautifulSoup(uploaded_file, 'lxml')
+def parse_roll_sheet(html_content):
+    soup = BeautifulSoup(html_content, 'lxml')
     data = []
     headers = soup.find_all('div', class_='full-width-header')
     
     if not headers:
-        st.warning("⚠️ Formatting warning: Could not find standard class headers.")
+        # Fallback if detection worked but soup failed (unlikely)
+        return pd.DataFrame()
 
     for header in headers:
         name_span = header.find('span')
@@ -121,8 +134,8 @@ def parse_roll_sheet(uploaded_file):
     if not df.empty: df = df.drop_duplicates(subset=["Student Name"], keep='first')
     return df
 
-def parse_student_list(uploaded_file):
-    soup = BeautifulSoup(uploaded_file, 'lxml')
+def parse_student_list(html_content):
+    soup = BeautifulSoup(html_content, 'lxml')
     data = []
     tables = soup.find_all('table')
     
@@ -284,19 +297,13 @@ def update_google_sheet_advanced(full_df):
         for i, time_slot in enumerate(unique_times):
             time_df = day_df[day_df['Sort Time'] == time_slot].copy()
             
-            # Helper to sort
             def get_sorted_group(grp_num):
                 mask = time_df['Keyword'].apply(lambda x: parse_group_number(x) == grp_num)
                 grp_df = time_df[mask].copy()
-                
                 grp_df['sort_skill'] = grp_df['Level'].apply(parse_skill_number)
                 grp_df['sort_att'] = grp_df['Attend#'].apply(parse_attendance)
                 grp_df['sort_age'] = grp_df['Age'].apply(parse_age)
-                
-                return grp_df.sort_values(
-                    by=['sort_skill', 'sort_att', 'sort_age'],
-                    ascending=[True, True, True]
-                )
+                return grp_df.sort_values(by=['sort_skill', 'sort_att', 'sort_age'], ascending=[True, True, True])
 
             g1 = get_sorted_group(1)
             g2 = get_sorted_group(2)
@@ -306,38 +313,27 @@ def update_google_sheet_advanced(full_df):
             final_records = []
             border_ranges = []
             
-            # Helper to Pad and Append
             def add_group_block(df_group, label_num):
                 nonlocal final_records, border_ranges
-                
                 rows = df_group.to_dict('records')
                 count = len(rows)
-                
                 needed = max(0, 7 - count)
                 
                 open_rows = []
                 for _ in range(needed):
                     open_rows.append({
-                        "Student Name": "open",
-                        "Age": "", "Attend#": "", 
-                        "Keyword": "",   # BLANK for open rows
-                        "Level": "",     # BLANK for open rows
-                        "Class Name": "",# BLANK for open rows
-                        "RS Comment": ""
+                        "Student Name": "open", "Age": "", "Attend#": "", 
+                        "Keyword": "", "Level": "", "Class Name": "", "RS Comment": ""
                     })
                 
                 block = open_rows + rows
-                
                 start_idx = len(final_records) 
                 end_idx = start_idx + len(block) - 1
-                
                 border_ranges.append((start_idx, end_idx))
                 final_records.extend(block)
-                
                 spacer = {c: "" for c in export_cols}
                 final_records.extend([spacer])
 
-            # Build the Stack
             add_group_block(g1, 1)
             add_group_block(g2, 2)
             add_group_block(g3, 3)
@@ -345,7 +341,6 @@ def update_google_sheet_advanced(full_df):
             if not g_other.empty:
                 final_records.extend(g_other.to_dict('records'))
 
-            # Store Data
             formats_list = apply_highlight_rules(final_records)
             slot_format_map[i] = formats_list
             slot_border_ranges[i] = border_ranges
@@ -383,12 +378,11 @@ def update_google_sheet_advanced(full_df):
         
         requests = []
         
-        # 1. BOLD HEADERS (Row 1)
+        # 1. BOLD HEADERS
         requests.append({
             "repeatCell": {
                 "range": {
-                    "sheetId": ws.id,
-                    "startRowIndex": 0, "endRowIndex": 1,
+                    "sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 1,
                     "startColumnIndex": 0, "endColumnIndex": total_cols
                 },
                 "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
@@ -396,10 +390,9 @@ def update_google_sheet_advanced(full_df):
             }
         })
         
-        # 2. FORMATTING (Colors/Text) & BORDERS
+        # 2. FORMATTING & BORDERS
         current_col_start = 0
         for i in range(len(unique_times)):
-            # A. Colors/Text
             formats = slot_format_map[i]
             for row_idx, fmt in enumerate(formats):
                 if fmt:
@@ -432,7 +425,6 @@ def update_google_sheet_advanced(full_df):
                             }
                         })
             
-            # B. Borders
             ranges = slot_border_ranges[i]
             for (start_r, end_r) in ranges:
                 sheet_start_row = start_r + 1 
@@ -470,49 +462,69 @@ def update_google_sheet_advanced(full_df):
 
 
 # --- MAIN UI ---
-st.title("🥷 Ninja Park Data Processor 3.8")
+st.title("🥷 Ninja Park Data Processor 3.9")
 st.write("Dashboard Layout: 7-Row Groups with Borders")
 
 col1, col2 = st.columns(2)
 with col1:
-    roll_file = st.file_uploader("1. Upload Roll Sheet", type=['html', 'htm'])
+    file_1 = st.file_uploader("Upload File A", type=['html', 'htm'])
 with col2:
-    list_file = st.file_uploader("2. Upload Student List", type=['html', 'htm'])
+    file_2 = st.file_uploader("Upload File B", type=['html', 'htm'])
 
-if roll_file and list_file:
-    roll_file.seek(0)
-    list_file.seek(0)
+if file_1 and file_2:
+    file_1.seek(0)
+    file_2.seek(0)
+    
+    content_1 = file_1.read().decode("utf-8", errors='ignore')
+    content_2 = file_2.read().decode("utf-8", errors='ignore')
+    
+    # SMART DETECTION
+    type_1 = identify_file_type(content_1)
+    type_2 = identify_file_type(content_2)
+    
+    roll_content = None
+    list_content = None
+    
+    if type_1 == 'roll': roll_content = content_1
+    elif type_1 == 'list': list_content = content_1
+    
+    if type_2 == 'roll': roll_content = content_2
+    elif type_2 == 'list': list_content = content_2
     
     st.divider()
-    with st.spinner('Building Dashboard...'):
-        try:
-            df_roll = parse_roll_sheet(roll_file.read())
-            df_list = parse_student_list(list_file.read())
+    
+    if not roll_content or not list_content:
+        st.error("⚠️ Could not identify files. Please ensure one is the Roll Sheet and one is the Student List.")
+    else:
+        with st.spinner('Building Dashboard...'):
+            try:
+                df_roll = parse_roll_sheet(roll_content)
+                df_list = parse_student_list(list_content)
 
-            if df_roll.empty: st.warning("⚠️ No data in Roll Sheet.")
-            if df_list.empty: st.warning("⚠️ No data in Student List.")
+                if df_roll.empty: st.warning("⚠️ No data in Roll Sheet.")
+                if df_list.empty: st.warning("⚠️ No data in Student List.")
 
-            merged_df = pd.merge(df_list, df_roll, on="Student Name", how="left")
-            merged_df = merged_df[merged_df["Student Name"].str.strip().astype(bool)]
-            
-            merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
-            merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")
-            
-            merged_df["Class Name"] = merged_df["Class Name"].apply(abbreviate_class_name)
-            
-            merged_df[['Sort Day', 'Sort Time', 'Time Str']] = merged_df['Class Name'].apply(
-                lambda x: pd.Series(parse_class_info(x))
-            )
+                merged_df = pd.merge(df_list, df_roll, on="Student Name", how="left")
+                merged_df = merged_df[merged_df["Student Name"].str.strip().astype(bool)]
+                
+                merged_df["Skill Level"] = merged_df["Skill Level"].fillna("s0")
+                merged_df["Class Name"] = merged_df["Class Name"].fillna("Not Found")
+                
+                merged_df["Class Name"] = merged_df["Class Name"].apply(abbreviate_class_name)
+                
+                merged_df[['Sort Day', 'Sort Time', 'Time Str']] = merged_df['Class Name'].apply(
+                    lambda x: pd.Series(parse_class_info(x))
+                )
 
-            merged_df.loc[merged_df['Sort Day'] == "Lost", 'Sort Day'] = "Lost"
+                merged_df.loc[merged_df['Sort Day'] == "Lost", 'Sort Day'] = "Lost"
 
-            st.success(f"Processed {len(merged_df)} students.")
-            
-            if st.button("Update Master Google Sheet", use_container_width=True):
-                link = update_google_sheet_advanced(merged_df)
-                if link:
-                    st.success("Google Sheet Updated Successfully!")
-                    st.markdown(f'<a href="{link}" target="_blank" style="background-color:#0083B8;color:white;padding:10px;text-decoration:none;border-radius:5px;display:inline-block;">OPEN GOOGLE SHEET ⬈</a>', unsafe_allow_html=True)
-                        
-        except Exception as e:
-            st.error(f"Detailed Error: {e}")
+                st.success(f"Processed {len(merged_df)} students.")
+                
+                if st.button("Update Master Google Sheet", use_container_width=True):
+                    link = update_google_sheet_advanced(merged_df)
+                    if link:
+                        st.success("Google Sheet Updated Successfully!")
+                        st.markdown(f'<a href="{link}" target="_blank" style="background-color:#0083B8;color:white;padding:10px;text-decoration:none;border-radius:5px;display:inline-block;">OPEN GOOGLE SHEET ⬈</a>', unsafe_allow_html=True)
+                            
+            except Exception as e:
+                st.error(f"Detailed Error: {e}")

@@ -1,0 +1,24 @@
+name: Keep App Awake
+
+on:
+  schedule:
+    # Runs at 00:00, 08:00, and 16:00 UTC every day (Every 8 hours)
+    - cron: '0 0,8,16 * * *'
+  workflow_dispatch: # Allows you to run this manually if needed
+
+permissions:
+  contents: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Push Empty Commit
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git commit --allow-empty -m "Keep Awake Heartbeat - [skip ci]"
+          git push
